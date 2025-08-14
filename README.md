@@ -1,2 +1,4 @@
 # automation_water_storage
-Automated solutions for water supply and storage using IOT devices that include microcomputers and multiple sensor modules. 
+Automated water supply storage solution built using esp32 microcontroller and IOT sensors.
+Flashed using esphome cli.
+Accessed and automation sequencing done on nodeRed through Home Assistant running on private homelab server environment.
