@@ -1,0 +1,78 @@
+
+esphome:
+  name: esp32-motor
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+switch:
+  - platform: gpio
+    pin: 25
+    name: "Ground Floor Motor"
+    inverted: true
+    id: motor1
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    pin: 26
+    name: "Top Floor Motor"
+    inverted: true
+    id: motor2
+    restore_mode: ALWAYS_OFF
+
+sensor:
+  - platform: adc
+    pin: GPIO35
+    name: "TDS Sensor (ppm)"
+    id: tds_sensor
+    update_interval: 10s
+    attenuation: 12db  # Full 0-3.3V range
+    filters:
+      - lambda: |-
+          float voltage = x; // * 3.3;  // Convert ADC to voltage
+          float tds = (133.42 * voltage * voltage * voltage
+                     - 255.86 * voltage * voltage
+                     + 857.39 * voltage) * 0.5;  // Gravity TDS formula
+          return tds;
+    unit_of_measurement: "ppm"
+    accuracy_decimals: 1
+  
+  # - platform: pulse_counter
+  #   pin: GPIO13
+  #   name: "Water Flow Rate"
+  #   id: flow_rate
+  #   unit_of_measurement: "L/min"
+  #   accuracy_decimals: 0
+  #   update_interval: 1s
+  #   filters:
+  #     - multiply: 0.1034  # Adjust this based on sensor spec (see below)
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+
+ota:
+  platform: esphome
+
+web_server:
+  port: 80
+
+wifi:
+  ssid: "DeaD.KilleR-extender"
+  password: "@Beatless!"
+  use_address: 192.168.0.148
+  fast_connect: true
+  output_power: 8.5
+  power_save_mode: none
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Motor ESP Fallback Hotspot"
+    password: "ktaZWM2kA1Dx"
+
+captive_portal:
+    
