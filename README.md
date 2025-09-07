@@ -72,7 +72,7 @@ v
 pip install esphome
 
 # Generate and upload configs for pump-side ESP32
-esphome run pump_esp32.yaml
+esphome run motor.yaml
 
 # Generate and upload configs for tank-side ESP32
-esphome run tank_esp32.yaml
+esphome run tank.yaml
