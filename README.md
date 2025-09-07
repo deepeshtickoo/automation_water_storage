@@ -56,7 +56,7 @@ v
    - Pump is switched on  
    - Pump is switched off  
 
-*(Insert flow chart here: `docs/flow_chart.png`)*
+*(Insert flow chart here: `flow_chart.jpg`)*
 
 ---
 
