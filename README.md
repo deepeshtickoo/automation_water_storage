@@ -1,78 +1,43 @@
-# Water Supply & Storage Automation with ESP32, Node-RED, and HAOS
+# Water Supply & Storage Automation
 
-This project automates the management of household water supply and storage tanks using **ESP32 microcontrollers**, **ESPHome**, **Home Assistant OS (HAOS)**, and **Node-RED**.  
-It runs on a dedicated homelab server powered by **TrueNAS Scale**.
+This project automates filling the household water tanks from the municipal
+supply. It pumps only when water is actually flowing and its TDS is in a safe
+range, and stops when the tank is full. It runs on ESP32 boards with ESPHome and
+Home Assistant OS, in a VM on a TrueNAS Scale homelab server.
 
-The system controls a water pump based on water quality (TDS levels) and tank water level, while providing real-time monitoring, alerts, and a web dashboard.
+## Versions
 
----
+| | Status | Summary |
+|---|---|---|
+| [**v2: Home Assistant**](v2-home-assistant/README.md) | **Current** | One smart-plug pump, tank level %, drain-valve flow + TDS check, WhatsApp alerts. All logic in HA automations. |
+| [v1: Node-RED](v1-nodered/README.md) | Archived | Two relay motors, two full / not-full tank sensors, TDS-only check, Node-RED flow. |
 
-## ✨ Features
-- Automated water pump control using relay module
-- TDS monitoring (95–195 ppm) to check water quality & availability
-- Tank full detection using XKC-Y25V moisture sensor
-- Real-time Node-RED dashboard with pump status, water quality, and tank level
-- Notifications/alerts when:
-  - Water supply starts
-  - Pump turns on
-  - Pump turns off
-- Manual pump control via dashboard
-- Runs on a dedicated homelab server (TrueNAS Scale with HAOS)
+## Repository layout
 
----
+```
+.
+├── v1-nodered/
+│   ├── README.md                  v1 hardware and Node-RED logic
+│   ├── esphome/
+│   │   ├── motor.yaml             pump-side ESP32 (2 relays + TDS)
+│   │   ├── tank.yaml              tank-side ESP32 (2 level sensors)
+│   │   └── secrets.yaml.example
+│   └── node-red/
+│       ├── flow_chart.jpg         screenshot of the flow
+│       └── README.md              how to export the flow JSON
+└── v2-home-assistant/
+    ├── README.md                  v2 logic, live state, known issues
+    ├── automations/water_automations.yaml
+    ├── scripts/test_water_supply.yaml
+    └── esphome/README.md          v2 board configs (to be added)
+```
 
-## 🛠️ System Architecture
-[ESP32 (Pump Side)] ---- Relay + TDS Sensor
-|
-| WiFi (ESPHome)
-|
-[ESP32 (Tank Side)] ---- XKC-Y25V Sensor
-|
-| WiFi (ESPHome)
-v
-[HAOS on TrueNAS Scale] --- Node-RED --- Dashboard + Alerts
+## Secrets
 
-*(Insert architecture diagram here: `docs/system_architecture.png`)*
+ESPHome configs read every password and key from `secrets.yaml`, which
+`.gitignore` excludes. Start from `secrets.yaml.example`.
 
----
-
-## 📡 Hardware Setup
-- **ESP32 #1 (Pump side)**  
-  - Relay module (controls pump)  
-  - Gravity TDS sensor (monitors water quality/availability)  
-
-- **ESP32 #2 (Tank side)**  
-  - XKC-Y25V moisture sensor (placed at tank’s 100% level, detects when full)  
-
----
-
-## ⚙️ Automation Logic
-1. When TDS is **between 95–195 ppm**, the pump starts.  
-2. Pump stays on until either:  
-   - TDS goes out of range, or  
-   - The tank full sensor is triggered.  
-3. Notifications are sent when:  
-   - Water supply starts  
-   - Pump is switched on  
-   - Pump is switched off  
-
-*(Insert flow chart here: `flow_chart.jpg`)*
-
----
-
-## 🚀 Installation & Setup
-
-### 1. Install HAOS on TrueNAS Scale
-- Deploy Home Assistant OS as a VM on your TrueNAS Scale server.  
-- Ensure Node-RED add-on is installed and accessible.
-
-### 2. Configure ESP32 Devices with ESPHome CLI
-```bash
-# Install ESPHome CLI if not already
-pip install esphome
-
-# Generate and upload configs for pump-side ESP32
-esphome run motor.yaml
-
-# Generate and upload configs for tank-side ESP32
-esphome run tank.yaml
+> **Earlier commits in this repo contain the real Wi-Fi and hotspot passwords.**
+> Removing them from the current files doesn't remove them from git history.
+> Change the Wi-Fi password, and the fallback hotspot password, on the router
+> and on every device.

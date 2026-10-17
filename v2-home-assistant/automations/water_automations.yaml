@@ -1,0 +1,384 @@
+# v2 water automations, exported from Home Assistant on 2026-10-17.
+#
+# These are copies for reference. The live ones are edited in the HA UI
+# (Settings → Automations). To reuse a block, paste it into a new automation
+# in YAML mode.
+#
+# Some automations target the pump by device_id (8a256324…, the TP-Link plug
+# behind switch.water_motor_pump). That ID only exists in this HA instance;
+# replace it with `entity_id: switch.water_motor_pump`.
+#
+# Entities:
+#   switch.water_motor_pump                 TP-Link smart plug feeding the pump
+#   switch.esp32_motor_drain_valve_switch   drain valve on the supply line
+#   sensor.esp32_motor_tds_sensor_ppm       Gravity TDS probe
+#   sensor.esp32_motor_water_flow_rate      flow meter, L/min
+#   sensor.esp32_tank_water_level           tank level, %
+#   input_boolean.water_check_emergency_mode
+#   sensor.water_motor_pump_runtime_today   history_stats helper, hours
+
+# ---------------------------------------------------------------- start pump
+
+- id: "1791201976515"
+  # entity_id: automation.every_hour_at_02min_if_tank_below_90_then_turn_pump_on
+  # (the entity ID is out of date: the check now runs below 80%, every 15 min)
+  alias: Water_supply_check_every_15min_12pm_to_530pm_or_hourly_24h_in_emergency_mode
+  description: >-
+    Supply-quality test using the drain valve. Normal mode: every 15 min from
+    12:00 to 17:30 daily. Emergency mode (input_boolean.water_check_emergency_mode
+    on): every hour on the hour, round the clock. Runs only if tank is below 80,
+    the pump is off and the drain valve is closed: open the valve, wait 10 s,
+    then check flow (>10) and TDS (100-220). Valve is always closed afterwards
+    and the pump is only turned on once the valve reports closed. If water is
+    not OK the pump stays off until the next check.
+  triggers:
+    - trigger: time_pattern
+      minutes: /15
+      id: every_15_min
+    - trigger: time_pattern
+      minutes: "0"
+      id: on_the_hour
+  conditions:
+    - condition: numeric_state
+      entity_id: sensor.esp32_tank_water_level
+      below: 80
+    - condition: state
+      entity_id: switch.water_motor_pump
+      state: "off"
+    - condition: state
+      entity_id: switch.esp32_motor_drain_valve_switch
+      state: "off"
+    - condition: or
+      conditions:
+        - condition: and
+          conditions:
+            - condition: state
+              entity_id: input_boolean.water_check_emergency_mode
+              state: "off"
+            - condition: trigger
+              id: every_15_min
+            - condition: time
+              after: "12:00:00"
+              before: "17:31:00"
+        - condition: and
+          conditions:
+            - condition: state
+              entity_id: input_boolean.water_check_emergency_mode
+              state: "on"
+            - condition: trigger
+              id: on_the_hour
+  actions:
+    - alias: Open drain valve
+      action: switch.turn_on
+      target:
+        entity_id: switch.esp32_motor_drain_valve_switch
+    - alias: Let water flow to drain for 10 s
+      delay:
+        seconds: 10
+    - alias: Check flow and TDS
+      if:
+        - condition: numeric_state
+          entity_id: sensor.esp32_motor_water_flow_rate
+          above: 10
+        - condition: numeric_state
+          entity_id: sensor.esp32_motor_tds_sensor_ppm
+          above: 100
+          below: 220
+      then:
+        - alias: "Water OK: close drain valve"
+          action: switch.turn_off
+          target:
+            entity_id: switch.esp32_motor_drain_valve_switch
+        - alias: Wait until valve reports closed (never run pump with valve open)
+          wait_template: "{{ is_state('switch.esp32_motor_drain_valve_switch', 'off') }}"
+          timeout:
+            seconds: 10
+          continue_on_timeout: false
+        - alias: Turn pump on
+          action: switch.turn_on
+          target:
+            entity_id: switch.water_motor_pump
+      else:
+        - alias: "Water not OK: close drain valve, pump stays off"
+          action: switch.turn_off
+          target:
+            entity_id: switch.esp32_motor_drain_valve_switch
+  mode: single
+  max_exceeded: silent
+
+# ----------------------------------------------------------------- stop pump
+
+- id: "1791197999050"
+  alias: If_tank_level_above_95_for_5min_then_turn_pump_off
+  description: ""
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.esp32_tank_water_level
+      above: 95
+      for:
+        minutes: 5
+  actions:
+    - action: switch.turn_off
+      target:
+        device_id: 8a256324a908b0e61e812f3e6e9c2364
+  mode: single
+
+- id: "1791203543369"
+  alias: If_flow_not_above_10_for_5min_after_pump_on_then_turn_pump_off
+  description: >-
+    After the pump turns on, stop it if the flow sensor is not above 10 at any
+    point within 5 minutes (passes immediately if already above 10).
+  triggers:
+    - trigger: switch.turned_on
+      target:
+        device_id:
+          - 8a256324a908b0e61e812f3e6e9c2364
+      options:
+        behavior: each
+  actions:
+    - wait_template: "{{ states('sensor.esp32_motor_water_flow_rate') | float(0) > 10 }}"
+      timeout:
+        minutes: 5
+      continue_on_timeout: true
+    - if:
+        - condition: template
+          value_template: "{{ not wait.completed }}"
+      then:
+        - action: switch.turn_off
+          target:
+            device_id: 8a256324a908b0e61e812f3e6e9c2364
+  mode: single
+
+- id: "1791207851638"
+  # entity_id: automation.if_tds_falls_below_100_for_1min_then_turn_pump_off
+  alias: If_tds_falls_below_100_for_90s_then_turn_pump_off
+  description: ""
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.esp32_motor_tds_sensor_ppm
+      below: 100
+      for:
+        minutes: 1
+        seconds: 30
+  actions:
+    - action: switch.turn_off
+      target:
+        device_id: 8a256324a908b0e61e812f3e6e9c2364
+  mode: single
+
+- id: "1791207966124"
+  # entity_id: automation.if_tds_jumps_over_220_for_1min_then_turn_pump_off
+  alias: If_tds_jumps_over_220_for_90s_then_turn_pump_off
+  description: ""
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.esp32_motor_tds_sensor_ppm
+      above: 220
+      for:
+        minutes: 1
+        seconds: 30
+  actions:
+    - action: switch.turn_off
+      target:
+        device_id: 8a256324a908b0e61e812f3e6e9c2364
+  mode: single
+
+- id: "1791202229261"
+  # entity_id: automation.at_6pm_disable_hourly_pump_on_and_watchdog_then_turn_pump_off
+  alias: At_6pm_turn_pump_off_and_close_drain_valve
+  description: >-
+    Hard stop at 18:00 in normal mode: turns the pump off and closes the drain
+    valve. Skipped while emergency mode is on, so hourly round-the-clock checks
+    are not cut off. The valve check stops itself after 17:30 through its own
+    time window.
+  triggers:
+    - trigger: time
+      at: "18:00:00"
+      weekday: [mon, tue, wed, thu, fri, sat, sun]
+  conditions:
+    - condition: state
+      entity_id: input_boolean.water_check_emergency_mode
+      state: "off"
+  actions:
+    - alias: Pump off
+      action: switch.turn_off
+      target:
+        entity_id: switch.water_motor_pump
+    - alias: Close drain valve
+      action: switch.turn_off
+      target:
+        entity_id: switch.esp32_motor_drain_valve_switch
+  mode: single
+
+# ------------------------------------------------------------------- safety
+
+- id: "1791904797968"
+  alias: Interlock_pump_and_drain_valve_never_on_together
+  description: >-
+    Safety interlock. If the pump and the drain valve are ever both on, the one
+    that turned on last is switched off straight away: a pump that starts while
+    the valve is open is turned off, and a valve that opens while the pump is
+    running is closed.
+  triggers:
+    - trigger: state
+      entity_id: switch.esp32_motor_drain_valve_switch
+      to: "on"
+      id: valve_on
+    - trigger: state
+      entity_id: switch.water_motor_pump
+      to: "on"
+      id: pump_on
+  conditions:
+    - condition: state
+      entity_id: switch.esp32_motor_drain_valve_switch
+      state: "on"
+    - condition: state
+      entity_id: switch.water_motor_pump
+      state: "on"
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: valve_on
+          sequence:
+            - alias: "Pump already running: close the drain valve"
+              action: switch.turn_off
+              target:
+                entity_id: switch.esp32_motor_drain_valve_switch
+        - conditions:
+            - condition: trigger
+              id: pump_on
+          sequence:
+            - alias: "Valve already open: turn the pump off"
+              action: switch.turn_off
+              target:
+                entity_id: switch.water_motor_pump
+  mode: queued
+  max: 4
+
+- id: "1791932570078"
+  alias: Watchdog_close_drain_valve_if_open_more_than_3min
+  description: >-
+    Safety net: a check or test only needs the drain valve open for about 90 s.
+    If the valve is still on after 3 minutes, or is found on when Home Assistant
+    starts, close it.
+  triggers:
+    - trigger: state
+      entity_id: switch.esp32_motor_drain_valve_switch
+      to: "on"
+      for:
+        minutes: 3
+    - trigger: homeassistant
+      event: start
+  conditions:
+    - condition: state
+      entity_id: switch.esp32_motor_drain_valve_switch
+      state: "on"
+  actions:
+    - alias: Close drain valve
+      action: switch.turn_off
+      target:
+        entity_id: switch.esp32_motor_drain_valve_switch
+  mode: single
+  max_exceeded: silent
+
+# ---------------------------------------------------------- notifications
+
+- id: "1791932580889"
+  alias: Water_status_alert_hourly_in_normal_mode_every_6h_in_emergency_mode
+  description: >-
+    Sends a status message each time the drain valve closes after a check that
+    started on the hour. Normal mode: the on-the-hour checks from 12:00 to
+    17:00. Emergency mode: only the checks at 00:00, 06:00, 12:00 and 18:00.
+    Flow and TDS are captured the moment the valve closes (the check readings);
+    pump state, runtime since midnight and tank level are read 5 s later. Not
+    sent when a check is skipped. Posted as a Home Assistant notification
+    (replaces the previous one) and sent on WhatsApp via
+    rest_command.send_water_alert_whatsapp.
+  triggers:
+    - trigger: state
+      entity_id: switch.esp32_motor_drain_valve_switch
+      from: "on"
+      to: "off"
+      id: check_done
+  conditions:
+    - condition: or
+      conditions:
+        - condition: and
+          conditions:
+            - condition: state
+              entity_id: input_boolean.water_check_emergency_mode
+              state: "off"
+            - condition: time
+              after: "12:00:00"
+              before: "17:31:00"
+            - condition: template
+              value_template: "{{ as_local(trigger.from_state.last_changed).minute == 0 }}"
+        - condition: and
+          conditions:
+            - condition: state
+              entity_id: input_boolean.water_check_emergency_mode
+              state: "on"
+            - condition: template
+              value_template: >-
+                {{ as_local(trigger.from_state.last_changed).minute == 0 and
+                as_local(trigger.from_state.last_changed).hour % 6 == 0 }}
+  actions:
+    - alias: Capture the check readings immediately
+      variables:
+        flow: "{{ states('sensor.esp32_motor_water_flow_rate') }}"
+        tds: "{{ states('sensor.esp32_motor_tds_sensor_ppm') }}"
+    - alias: Judge the readings
+      variables:
+        ok: >-
+          {{ is_number(flow) and is_number(tds) and flow | float > 10 and
+          100 < tds | float < 220 }}
+    - alias: Give the pump a few seconds to start if the water was OK
+      delay:
+        seconds: 5
+    - alias: Read pump, runtime and tank
+      variables:
+        mins: "{{ ((states('sensor.water_motor_pump_runtime_today') | float(0)) * 60) | round(0) | int }}"
+        pump: "{{ states('switch.water_motor_pump') }}"
+        tank: "{{ states('sensor.esp32_tank_water_level') }}"
+    - alias: Post water status
+      action: persistent_notification.create
+      data:
+        notification_id: water_status
+        title: "Water system status {{ now().strftime('%H:%M') }}"
+        message: |-
+          Check: performed ({{ 'water OK' if ok else 'water NOT OK' }})
+          Flow: {{ flow }} L/min
+          TDS: {{ tds }} ppm
+          Pump: {{ pump | upper }}, ran {{ mins // 60 }}h {{ mins % 60 }}m today
+          Tank: {{ (tank | float | round(0) | int) if is_number(tank) else tank }}%
+    - alias: Send status on WhatsApp
+      action: rest_command.send_water_alert_whatsapp
+      data:
+        message: |-
+          Water system status {{ now().strftime('%d %b, %H:%M') }}
+          Check: performed ({{ 'water OK' if ok else 'water NOT OK' }})
+          Flow: {{ flow }} L/min
+          TDS: {{ tds | float | round(0) }} ppm
+          Pump: {{ pump | upper }}, ran {{ mins // 60 }}h {{ mins % 60 }}m today
+          Tank: {{ (tank | float | round(0) | int) if is_number(tank) else tank }}%
+  mode: single
+
+- id: "1787590388388"
+  alias: At_6pm_send_daily_water_report_on_whatsapp
+  description: >-
+    Daily at 18:00 (Asia/Kolkata): sends the current tank level, total pump
+    on-time since local midnight, and one of five rotating clean-water quotes
+    via WhatsApp (rest_command.send_water_alert_whatsapp, Green API).
+  initial_state: true
+  triggers:
+    - trigger: time
+      at: "18:00:00"
+  actions:
+    - delay:
+        seconds: 2
+    - action: rest_command.send_water_alert_whatsapp
+      data:
+        # Kept verbatim (\n = line break) so the WhatsApp layout matches.
+        message: "{% set level = states('sensor.esp32_tank_water_level') %}{% set runtime_h =\nstates('sensor.water_motor_pump_runtime_today') %}{% set total_minutes =\n((runtime_h | float(0)) * 60) | round(0) | int %}{% set quotes = ['Clean water\nis the foundation of a healthy life.', 'Every drop of clean water is a promise\nof health and dignity.', 'Clean water nourishes health, hope, and every\ntomorrow.', 'Safe water is the quiet beginning of a healthier day.',\n'Protecting clean water is protecting life.'] %}{% set quote =\nquotes[(now().timetuple().tm_yday - 1) % (quotes | length)] %}Water Supply\nDaily Report — {{ now().strftime('%a, %d %b %Y') }}\n\n\nTank level: {{ (level | float | round(1)) if is_number(level) else\n'Unavailable' }}%\n\nPump runtime today: {{ total_minutes // 60 }}h {{ total_minutes % 60 }}m\n\n\n“{{ quote }}”"
+  mode: single

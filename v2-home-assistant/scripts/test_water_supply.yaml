@@ -1,0 +1,84 @@
+# On-demand supply test, exported from Home Assistant on 2026-10-17
+# (script.test_water_supply_90s).
+#
+# KNOWN BUGS in the live script, copied here unchanged; see ../README.md:
+#   - The valve stays open for 100 s (90 s + 10 s delays), not the 10 s in the alias.
+#   - `flow`, `tds` and `verdict` are never set, so the report comes out blank.
+
+test_water_supply_90s:
+  alias: Test water supply (open valve 10s, report flow and TDS)
+  description: >-
+    On-demand supply test. Opens the drain valve for 10 s, then reads flow and
+    TDS, closes the valve and reports the readings (notification in Home
+    Assistant, and returned as the script response). Does nothing if the pump
+    is running or the valve is already open. Does not start the pump.
+  icon: mdi:water-check
+  mode: single
+  sequence:
+    - alias: Skip if pump is running
+      if:
+        - condition: state
+          entity_id: switch.water_motor_pump
+          state: "on"
+      then:
+        - variables:
+            result:
+              status: skipped
+              reason: Pump is running, drain valve not opened
+        - action: persistent_notification.create
+          data:
+            title: Water supply test
+            message: "Test skipped: the pump is running."
+        - stop: Skipped, pump is running
+          response_variable: result
+    - alias: Skip if valve already open
+      if:
+        - condition: state
+          entity_id: switch.esp32_motor_drain_valve_switch
+          state: "on"
+      then:
+        - variables:
+            result:
+              status: skipped
+              reason: Drain valve is already open (another test may be running)
+        - action: persistent_notification.create
+          data:
+            title: Water supply test
+            message: "Test skipped: the drain valve is already open."
+        - stop: Skipped, valve already open
+          response_variable: result
+    - alias: Open drain valve
+      action: switch.turn_on
+      target:
+        entity_id: switch.esp32_motor_drain_valve_switch
+    - alias: Let water flow to drain for 90 s
+      delay:
+        minutes: 1
+        seconds: 30
+    - alias: Let water flow to drain for 10 s
+      delay:
+        seconds: 10
+    - alias: Close drain valve
+      action: switch.turn_off
+      target:
+        entity_id: switch.esp32_motor_drain_valve_switch
+    - alias: Build report
+      variables:
+        report:
+          status: complete
+          flow: "{{ flow }}"
+          tds_ppm: "{{ tds }}"
+          verdict: "{{ verdict }}"
+          valve_open_seconds: 10
+          finished_at: "{{ now().strftime('%H:%M:%S') }}"
+    - alias: Show report
+      action: persistent_notification.create
+      data:
+        title: "Water supply test: {{ verdict }}"
+        message: |-
+          Flow: {{ flow }}
+          TDS: {{ tds }} ppm
+          Result: {{ verdict }} (needs flow above 10 and TDS 100 to 220)
+          Finished at {{ now().strftime('%H:%M:%S') }}
+    - stop: Test complete
+      response_variable: report

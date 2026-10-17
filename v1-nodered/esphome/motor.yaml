@@ -1,3 +1,15 @@
+# v1 pump-side ESP32: two relay-driven motors (ground floor, top floor) and a
+# Gravity TDS probe on the supply line. Node-RED decides when the motors run;
+# the two failsafes below stop them even if Home Assistant, Node-RED or the
+# Wi-Fi link to the tank ESP is down.
+
+substitutions:
+  # Longest a motor may run in one go before the ESP switches it off itself.
+  # Set this a little above your longest normal fill time.
+  max_motor_runtime: 90min
+  # Same threshold as the Node-RED "if tds<58.5 -> both_motor_off" node:
+  # below this the probe is in air, i.e. there is no supply water.
+  dry_tds_ppm: "58.5"
 
 esphome:
   name: esp32-motor
@@ -14,6 +26,10 @@ switch:
     inverted: true
     id: motor1
     restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - script.execute: motor1_max_runtime
+    on_turn_off:
+      - script.stop: motor1_max_runtime
 
   - platform: gpio
     pin: 26
@@ -21,6 +37,29 @@ switch:
     inverted: true
     id: motor2
     restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - script.execute: motor2_max_runtime
+    on_turn_off:
+      - script.stop: motor2_max_runtime
+
+script:
+  - id: motor1_max_runtime
+    mode: restart
+    then:
+      - delay: ${max_motor_runtime}
+      - logger.log:
+          level: WARN
+          format: "Ground Floor Motor hit max runtime, switching off"
+      - switch.turn_off: motor1
+
+  - id: motor2_max_runtime
+    mode: restart
+    then:
+      - delay: ${max_motor_runtime}
+      - logger.log:
+          level: WARN
+          format: "Top Floor Motor hit max runtime, switching off"
+      - switch.turn_off: motor2
 
 sensor:
   - platform: adc
@@ -30,15 +69,26 @@ sensor:
     update_interval: 10s
     attenuation: 12db  # Full 0-3.3V range
     filters:
+      # The adc platform already reports volts, so no * 3.3 is needed.
       - lambda: |-
-          float voltage = x; // * 3.3;  // Convert ADC to voltage
+          float voltage = x;
           float tds = (133.42 * voltage * voltage * voltage
                      - 255.86 * voltage * voltage
                      + 857.39 * voltage) * 0.5;  // Gravity TDS formula
           return tds;
+      # Smooth out ESP32 ADC noise (median of the last 3 readings, ~30 s).
+      - median:
+          window_size: 3
+          send_every: 1
     unit_of_measurement: "ppm"
     accuracy_decimals: 1
-  
+    on_value_range:
+      - below: ${dry_tds_ppm}
+        then:
+          # Dry-run protection that doesn't depend on Home Assistant.
+          - switch.turn_off: motor1
+          - switch.turn_off: motor2
+
   # - platform: pulse_counter
   #   pin: GPIO13
   #   name: "Water Flow Rate"
@@ -47,32 +97,34 @@ sensor:
   #   accuracy_decimals: 0
   #   update_interval: 1s
   #   filters:
-  #     - multiply: 0.1034  # Adjust this based on sensor spec (see below)
-
-# Enable logging
-logger:
-
-# Enable Home Assistant API
-api:
-
-ota:
-  platform: esphome
-
-web_server:
-  port: 80
+  #     - multiply: 0.1034  # Adjust this based on sensor spec
 
 wifi:
-  ssid: "DeaD.KilleR-extender"
-  password: "@Beatless!"
+  ssid: !secret motor_wifi_ssid
+  password: !secret wifi_password
   use_address: 192.168.0.148
   fast_connect: true
   output_power: 8.5
   power_save_mode: none
-
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  # Fallback hotspot (captive portal) in case the Wi-Fi connection fails
   ap:
     ssid: "Motor ESP Fallback Hotspot"
-    password: "ktaZWM2kA1Dx"
+    password: !secret fallback_ap_password
 
 captive_portal:
-    
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key_motor
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+web_server:
+  port: 80
+  auth:
+    username: !secret web_username
+    password: !secret web_password
