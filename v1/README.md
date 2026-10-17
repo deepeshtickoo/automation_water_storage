@@ -1,7 +1,7 @@
-# v1: Two motors, float sensors, Node-RED
+# v1: Two relay motors, float sensors, Node-RED
 
 > **Archived.** This is the first version of the system, as of September 2025.
-> It has been replaced by [v2](../v2-home-assistant/README.md). It is kept here
+> It has been replaced by [v2](../v2/README.md). It is kept here
 > for reference.
 
 Two ESP32 boards running ESPHome report to Home Assistant OS. HAOS runs as a VM

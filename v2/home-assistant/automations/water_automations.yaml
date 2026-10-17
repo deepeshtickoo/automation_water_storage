@@ -1,8 +1,9 @@
-# v2 water automations, exported from Home Assistant on 2026-10-17.
+# Home Assistant water automations, exported on 2026-10-17.
 #
-# These are copies for reference. The live ones are edited in the HA UI
-# (Settings → Automations). To reuse a block, paste it into a new automation
-# in YAML mode.
+# NOT IN USE: v2 logic runs in Node-RED (see ../../node-red/). All of these are
+# disabled in HA except At_6pm_send_daily_water_report_on_whatsapp. They are
+# kept for reference only. Don't enable them alongside the Node-RED flow, or
+# both will switch the pump.
 #
 # Some automations target the pump by device_id (8a256324…, the TP-Link plug
 # behind switch.water_motor_pump). That ID only exists in this HA instance;

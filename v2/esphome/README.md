@@ -1,6 +1,6 @@
 # v2 ESPHome configs: not committed yet
 
-The v2 boards run newer firmware than [v1](../../v1-nodered/esphome/). Their YAML
+The v2 boards run newer firmware than [v1](../../v1/esphome/). Their YAML
 lives only in the ESPHome add-on and hasn't been copied here.
 
 These entities show what each board needs to expose:
