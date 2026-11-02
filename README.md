@@ -1,78 +1,53 @@
-# Water Supply & Storage Automation with ESP32, Node-RED, and HAOS
+# Automated water supply and storage (ESP32, Home Assistant, Node-RED)
 
-This project automates the management of household water supply and storage tanks using **ESP32 microcontrollers**, **ESPHome**, **Home Assistant OS (HAOS)**, and **Node-RED**.  
-It runs on a dedicated homelab server powered by **TrueNAS Scale**.
+A residential water supply storage solution for a 5-storey building in Delhi NCR. Municipal water arrives roughly every other day for a few hours, at low pressure, and the first water after supply starts is often contaminated (high TDS, sewage smell). This system finds the supply, rejects bad water, pumps only clean water up to the rooftop tanks and reports what happened.
 
-The system controls a water pump based on water quality (TDS levels) and tank water level, while providing real-time monitoring, alerts, and a web dashboard.
+## What it does
 
----
+- Detects municipal supply with short drain-valve probes, so the pump never runs dry looking for water.
+- Waits out the contaminated first water, then runs drain tests that compare TDS before and after to decide whether to pump.
+- Fills 3 x 2000 L rooftop tanks (one shared volume, about 15 m rising main): 80% is a successful fill, 95% is a completed fill.
+- Forecasts the next 7 days of supply from its own history and probes less on days no supply is expected.
+- Reports through a Telegram bot (owner and family group), a Home Assistant dashboard and a daily 6 PM email.
+- Optional AI layer (any OpenAI-compatible endpoint) writes summaries, answers questions with read-only SQL tools and scores its own forecasts. The controller never depends on it.
 
-## ✨ Features
-- Automated water pump control using relay module
-- TDS monitoring (95–195 ppm) to check water quality & availability
-- Tank full detection using XKC-Y25V moisture sensor
-- Real-time Node-RED dashboard with pump status, water quality, and tank level
-- Notifications/alerts when:
-  - Water supply starts
-  - Pump turns on
-  - Pump turns off
-- Manual pump control via dashboard
-- Runs on a dedicated homelab server (TrueNAS Scale with HAOS)
+## Plumbing
 
----
+Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One branch goes up the rising main to the tanks, the other to a sewer drain through a normally-closed drain valve. Probing and drain tests use the valve only; the pump and the valve are never on together.
 
-## 🛠️ System Architecture
-[ESP32 (Pump Side)] ---- Relay + TDS Sensor
-|
-| WiFi (ESPHome)
-|
-[ESP32 (Tank Side)] ---- XKC-Y25V Sensor
-|
-| WiFi (ESPHome)
-v
-[HAOS on TrueNAS Scale] --- Node-RED --- Dashboard + Alerts
+## Hardware
 
-*(Insert architecture diagram here: `docs/system_architecture.png`)*
+| Part | Role |
+|---|---|
+| ESP32, pump side (ESPHome, motor.yaml) | TDS sensor, water flow sensor, drain valve relay |
+| ESP32, tank side (ESPHome, tank.yaml) | Tank level sensor (distance type, reported as %) |
+| Smart plug with power monitoring | Switches the pump, reports watts/amps/volts |
+| Home Assistant OS (VM on TrueNAS Scale) | Runs Node-RED, the dashboard and helpers |
 
----
+## Controller routine (tab: Water System (Lean))
 
-## 📡 Hardware Setup
-- **ESP32 #1 (Pump side)**  
-  - Relay module (controls pump)  
-  - Gravity TDS sensor (monitors water quality/availability)  
+- Supply day: from 12:00 PM to 6:00 PM, open the valve for 10 s every 5 minutes to look for flow.
+- First flow: stop probing for 33 minutes to let the contaminated water pass.
+- Drain test: valve open 5 minutes, TDS before vs after. Falling, or steady inside 100-240 ppm: 50 s pump pulse, then keep filling while TDS stays in range. Rising: no pump, test again every 15 minutes.
+- Stops: tank 95% (done for the day), TDS out of range, dry run, supply lost, 120-minute cap per pump run.
+- No-supply day (from the 7-day forecast): probe every 30 minutes, 12:00 PM to 4:00 PM only. Any flow switches to the supply-day routine.
+- Manual mode from the dashboard pauses the controller and returns to automatic after 90 minutes.
 
-- **ESP32 #2 (Tank side)**  
-  - XKC-Y25V moisture sensor (placed at tank’s 100% level, detects when full)  
+## Node-RED tabs (node-red/flows.json)
 
----
+- Water System (Lean): controller, event layer (flow, fill, successful, completed, failed events), supply window learner.
+- Water System (Unified): SQLite recorder, dashboard values, 6 PM email, day forecast.
+- Water AI Core, Context and Tools, Forecast (shadow), Anomalies and Digests, Diagnostics: model routing with fallbacks, call budget, read-only tools, agent loop, forecast scoring.
+- Water Telegram Chat: /status, /week, /insights, free chat, owner-only settings (/window, /tds) applied after /yes, live updates and group notices.
+- The 7-day supply forecast lives in the Forecast tab (code only, no AI).
 
-## ⚙️ Automation Logic
-1. When TDS is **between 95–195 ppm**, the pump starts.  
-2. Pump stays on until either:  
-   - TDS goes out of range, or  
-   - The tank full sensor is triggered.  
-3. Notifications are sent when:  
-   - Water supply starts  
-   - Pump is switched on  
-   - Pump is switched off  
+## Install
 
-*(Insert flow chart here: `flow_chart.jpg`)*
+1. ESPHome: copy secrets.yaml.example to secrets.yaml, fill it in, then flash motor.yaml and tank.yaml.
+2. Node-RED: import node-red/flows.json and install any missing palette nodes (Home Assistant websocket nodes, node-red-node-sqlite, node-red-contrib-telegrambot, node-red-node-email and the LLM nodes used by the flows).
+3. Set your own values: Home Assistant server, entity IDs, Telegram bot token and chat IDs (placeholders 123456789 and -1001234567890), email account, AI endpoint and key (the ai-cfg node).
+4. Create the Home Assistant helpers used by the flows: input_boolean.water_manual_control, input_boolean.water_ai_enabled and the input_text.water_* status helpers.
 
----
+## Versioning
 
-## 🚀 Installation & Setup
-
-### 1. Install HAOS on TrueNAS Scale
-- Deploy Home Assistant OS as a VM on your TrueNAS Scale server.  
-- Ensure Node-RED add-on is installed and accessible.
-
-### 2. Configure ESP32 Devices with ESPHome CLI
-```bash
-# Install ESPHome CLI if not already
-pip install esphome
-
-# Generate and upload configs for pump-side ESP32
-esphome run motor.yaml
-
-# Generate and upload configs for tank-side ESP32
-esphome run tank.yaml
+This repository is updated automatically from the live system by a Node-RED Git Sync flow, one pull request per noteworthy change. See CHANGELOG.md. Keys, tokens, chat IDs, email addresses and private hostnames are redacted before publishing.
