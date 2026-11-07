@@ -8,9 +8,10 @@ A residential water supply storage solution for a 5-storey building in Delhi NCR
 - Waits out the contaminated first water, then runs drain tests that compare TDS before and after to decide whether to pump.
 - Keeps filling late in a supply day, when line pressure is too low for the valve to show flow, by testing with short pump pulses.
 - Fills 3 x 2000 L rooftop tanks (one shared volume, about 15 m rising main): 80% is a successful fill, 95% is a completed fill.
+- Keeps one daily supply record (one row per day) that the dashboard, the Telegram bot and the AI all read, so they always agree.
 - Forecasts the next 7 days of supply from its own history and probes less on days no supply is expected.
 - Reports through a Telegram bot (owner and family group), a Home Assistant dashboard and a daily 6 PM email.
-- Optional AI layer (any OpenAI-compatible endpoint) writes summaries, answers questions with read-only SQL tools and scores its own forecasts. The controller never depends on it.
+- Optional AI layer (any OpenAI-compatible endpoint, free models by default) writes summaries, answers questions with read-only SQL tools and scores its own forecasts. The controller never depends on it.
 
 ## Plumbing
 
@@ -25,7 +26,7 @@ Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One b
 | Smart plug with power monitoring | Switches the pump, reports watts/amps/volts |
 | Home Assistant OS (VM on TrueNAS Scale) | Runs Node-RED, the dashboard and helpers |
 
-## Controller routine (tab: Water System (Lean))
+## Controller routine
 
 - Supply day: from 12:00 PM to 6:00 PM, open the valve for 10 s every 5 minutes to look for flow.
 - First flow: stop probing for 33 minutes to let the contaminated water pass.
@@ -35,13 +36,16 @@ Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One b
 - No-supply day (from the 7-day forecast): probe every 30 minutes, 12:00 PM to 4:00 PM only. Any flow switches to the supply-day routine.
 - Manual mode from the dashboard pauses the controller and returns to automatic after 1h 30m.
 
-## Node-RED tabs (node-red/flows.json)
+## Node-RED flow (node-red/flows.json)
 
-- Water System (Lean): controller, event layer (one supply event per day, with fill, successful, completed and failed fills), supply window learner.
-- Water System (Unified): SQLite recorder, dashboard values, 6 PM email, day forecast.
-- Water AI Core, Context and Tools, Forecast (shadow), Anomalies and Digests, Diagnostics: model routing with fallbacks, call budget, read-only tools, agent loop, forecast scoring.
-- Water Telegram Chat: /status, /week, /insights, free chat, owner-only settings (/window, /tds) applied after /yes, live updates and group notices.
-- The 7-day supply forecast lives in the Forecast tab (code only, no AI).
+Everything runs in one tab, Water System, split into labelled sections:
+
+- Unified: SQLite recorder, dashboard values, 6 PM email and the daily supply record.
+- Controller: probes, drain tests, pump and pump probes, the event layer (one supply event per day) and the supply window learner.
+- Telegram bot: /status, /week, /insights, free chat, owner-only settings (/window, /tds) applied after /yes, live updates and group notices.
+- AI core, context and tools, diagnostics: model routing with fallbacks, call budget, read-only tools, agent loop, model bench.
+- Forecast: AI forecast (shadow, scored) and the 7-day supply forecast (code only, no AI).
+- Anomalies and digests.
 
 ## Install
 
