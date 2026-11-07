@@ -2,16 +2,9 @@
   {
     "id": "wu-tab",
     "type": "tab",
-    "label": "Water System (Unified)",
+    "label": "Water System",
     "disabled": false,
-    "info": "UNIFIED water system, created DISABLED. One tab with: (1) the event-model controller (probes 12 s every 15 min around the clock, events graded false positive / fill: successful, unsuccessful_system, unsuccessful_supply; pump may continue 85% to 95% while flow is strong; single run capped at 120 min; TDS judged on the median of the last 60 readings; pump and valve never on together), (2) a read-only observer that learns normal ranges from the data, flags departures, reads the controller's event log directly, and asks Ollama (qwen2.5:7b) for a short report every 5 min and on every pump/valve change; output goes only to Home Assistant notifications (water_bot, water_bot_alert, water_bot_stall), (3) dashboard Day selector sync (Automatic / Water Day / No Water Day = pause) and the 6 PM WhatsApp report with event counts. No Emergency mode, no 13:00 or 17:30 windows, no 1 PM prompt. To use it: disable the main tab, the Event Copy tab and the Water Bot tab, then enable this one. Never enable it together with any of them. The llm-config node (wb-llm) is shared with the Water Bot tab and still needs an API key placeholder."
-  },
-  {
-    "id": "wl-tab",
-    "type": "tab",
-    "label": "Water System (Lean)",
-    "disabled": false,
-    "info": "LEAN water system, created DISABLED. Controller only. Probes every 15 minutes from 12:15 PM to 5:45 PM: valve open 10 s, flow above the noise floor held 2 s. The pump starts only after flow has been seen on 3 probes in a row (about 30 minutes after first flow); a probe without flow resets the count. While the pump runs, TDS is checked once at the 50-second mark: the very last reading must be inside 100-240 ppm, otherwise the pump stops and waits for the next probe; after acceptance a rolling TDS check applies. Watchdogs: dry run, tank 95% (2 of the last 3 readings), 120-minute run cap, valve left open, pump and valve never on together; manual control for 90 minutes. Event grading is a separate node. The recorder, dashboard publisher, Qwen monitor and forecaster, and the 6 PM email stay in the Water System (Unified) tab, fed through link nodes and a state mirror. To switch on: disable the node 'Controller: state machine with event model (v5)' (wu-fsm) in the Unified tab and enable this tab, never both. To roll back, reverse that."
+    "info": "All live water-system flows in one tab (merged 7 Nov 2026). Sections, top to bottom: Unified (recorder, dashboard, email, daily supply record), Controller, Telegram bot, AI core, AI context and tools, AI diagnostics, AI forecast, AI anomalies and digests. Git Sync stays on its own tab (it holds the GitHub token)."
   },
   {
     "id": "7e55f602.47a88",
@@ -1433,7 +1426,7 @@
   {
     "id": "wl-tick",
     "type": "inject",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Controller tick (1 s)",
     "props": [
       {
@@ -1450,7 +1443,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 190,
-    "y": 100,
+    "y": 1700,
     "wires": [
       [
         "wl-ctrl",
@@ -1461,7 +1454,7 @@
   {
     "id": "wl-ha-events",
     "type": "server-state-changed",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Sensors, pump, valve, manual switch",
     "server": "7e55f602.47a88",
     "version": 6,
@@ -1510,7 +1503,7 @@
     ],
     "entityidfiltertype": "regex",
     "x": 430,
-    "y": 180,
+    "y": 1780,
     "wires": [
       [
         "wl-ctrl"
@@ -1520,7 +1513,7 @@
   {
     "id": "wl-ctrl",
     "type": "function",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Controller: probes, pump and watchdogs (Lean)",
     "func": "// Water System Lean controller v3.4 (routine of 2 Nov 2026, pump probes 7 Nov 2026).\n// Supply day: probe 12:00-6:00 PM every 5 min (valve 10 s). First flow -> no probing for 33 min -> 5-minute drain test (valve open): TDS before vs after\n//   -> decreasing, or steady inside the range: pump pulse (50 s, TDS in band); increasing: no pump. Drain test again every 15 minutes.\n// Fill: 80% successful (event layer), 95% completed (probing stops for the day). No low-flow stop in the controller; weak flow is only recorded by the event layer.\n// Run cap: the controller stops any single pump run at 120 min (category 'cap', then back to drain tests); a stop by the plug within 3 min of that is also logged as the cap.\n// No-supply day (global supplyExpect, from the 7-day forecast): probe every 30 min (:00/:30), 12:00-4:00 PM only; any flow switches to the supply-day routine.\n// v3.4 pump probes: once today's supply is proven (accepted run >= 10 min, tank +3 points, flow and TDS good), a valve check that sees no flow (late-day low pressure)\n//   switches to pump-probe mode: every 15 min a 50 s pump pulse (dry-run 3 s and TDS-at-50 s guards) instead of valve probes. 2 dry pulses in a row, or a pump-probe\n//   fill that raises the tank < 2 points in 20 min, ends pump probes for the day (back to valve probing). Ends at the window close or 95%.\nconst ids = {\n  tds: 'sensor.esp32_motor_tds_sensor_ppm', flow: 'sensor.esp32_motor_water_flow_rate',\n  tank: 'sensor.esp32_tank_water_level', runtime: 'sensor.water_motor_pump_runtime_today',\n  valve: 'switch.esp32_motor_drain_valve_switch', pump: 'switch.water_motor_pump',\n  manual: 'input_boolean.water_manual_control'\n};\nconst P = Object.assign({ windowStartMin: 720, windowEndMin: 1080, flowFloor: 2 }, global.get('leanParams') || {});\nconst C = {\n  probeOpenMs: 10000, flowHoldMs: 2000, probeEveryMs: 300000, holdAfterFlowMs: 1980000, dropAfterNegs: 3,\n  restEveryMs: 1800000, restEndMin: 960,\n  drainMs: 300000, drainEveryMs: 900000, drainNoFlowMs: 60000, drainOpenWaitMs: 15000, pulseMs: 50000,\n  trendMinDelta: 1, trendBucketMs: 10000,\n  startGraceMs: 8000, dryMs: 3000, tdsMin: Number(P.tdsMin) || 100, tdsMax: Number(P.tdsMax) || 240, rollN: 15, badTdsMs: 20000,\n  tankStop: 95, tankHoldMs: 180000, tankHardStop: 97, runCapMs: 7200000, valveMaxMs: 30000, manualMaxMs: 5400000, actuatorRetryMs: 3000, unknownBackoffMaxMs: 60000,\n  tankRateFloor: 0.4, tankRateCeil: 1.0, tankBlindFrom: 80, tankBlindMinAgeMin: 2, tankBlindStop: 95, tankSilentMs: 1500000, startStaleMs: 1200000,\n  provenMs: 600000, provenRise: 3, ppEveryMs: 900000, ppMaxDry: 2, noRiseMs: 1200000, noRiseMin: 2\n};\nconst defaults = {\n  phase: 'idle', sub: 'idle', tds: null, flow: null, tank: null, tankRaw: null, tankBuf: [], runtime: null, valve: null, pump: null,\n  lastSeen: {}, tdsBuf: [], nextAt: 0, probeStartedAt: 0, valveUntil: 0, closingSince: 0,\n  probe: { opened: false, actSince: 0, active: false, flowMax: 0 }, run: null, dryFrom: 0, badTdsFrom: 0,\n  lastTick: 0, manual: false, manualSince: 0, started: false, commandedAt: {}, date: '', day: 'pending',\n  fe: null, drain: null, done: false, stopCause: null, valveOnSince: 0, seq: 0, ev: null, events: [], tankHighSince: 0, offTry: { pump: 0, valve: 0 }, unavailSince: 0, offRequestedAt: 0, tankTs: []\n};\nlet s = global.get('waterLeanState') || {};\nfor (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = JSON.parse(JSON.stringify(defaults[k]));\ns.lastSeen = s.lastSeen || {}; s.commandedAt = s.commandedAt || {}; s.tdsBuf = s.tdsBuf || []; s.tankBuf = s.tankBuf || []; s.tankTs = s.tankTs || [];\nconst now = Date.now();\nconst out = [];\nconst log = [];\nconst cmd = (action, entity) => out.push({ payload: { action: `switch.${action}`, target: { entity_id: entity } } });\nconst emit = (topic, payload) => log.push({ topic, payload });\nconst num = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst median = (a) => { if (!a.length) return null; const x = a.slice().sort((p, q) => p - q); const m = x.length >> 1; return x.length % 2 ? x[m] : (x[m - 1] + x[m]) / 2; };\nconst t12 = (ms) => new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(ms)).replace(/\\u202f/g, ' ');\nconst inBand = (v) => Number.isFinite(v) && v >= C.tdsMin && v <= C.tdsMax;\nconst istDate = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(ms));\n// Rest day: the 7-day forecast says no supply is due today and nothing has flowed yet: probe at :00 and :30 only, until 4:00 PM.\nfunction restDay() {\n  const se = global.get('supplyExpect');\n  const today = istDate(now);\n  if (!se || se.date !== today || se.expected !== 'none') return false;\n  if (s.fe || s.ev || s.done) return false;\n  return !(s.events || []).some((e) => e.closeDate === today);\n}\nconst nextProbeAt = () => {\n  if (restDay()) return Math.ceil((now + 1000 + 19800000) / C.restEveryMs) * C.restEveryMs - 19800000;\n  return Math.ceil((now + 1000) / C.probeEveryMs) * C.probeEveryMs;\n};\nfunction inWindow() {\n  const q = {};\n  for (const x of new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now))) if (x.type !== 'literal') q[x.type] = x.value;\n  const m = Number(q.hour) * 60 + Number(q.minute);\n  const end = restDay() ? Math.min(P.windowEndMin, C.restEndMin + 1) : P.windowEndMin;\n  return m >= P.windowStartMin && m < end;\n}\nconst tdsDuring = (t0, t1) => s.tdsBuf.filter((x) => x.t >= t0 && x.t <= t1).map((x) => x.v);\n\n// TDS before vs after the drain test: median of the first minute against median of the last minute (forward-filled 10 s buckets).\nfunction classifyTrend(t0, t1) {\n  const pts = [];\n  let last = null;\n  for (const x of s.tdsBuf) if (x.t < t0) last = x.v;\n  const inside = s.tdsBuf.filter((x) => x.t >= t0 && x.t <= t1);\n  if (inside.length < 5) return { cls: 'unknown', note: 'too few TDS readings' };\n  if (t1 - inside[inside.length - 1].t > 60000) return { cls: 'unknown', note: 'TDS readings stopped' };\n  let idx = 0;\n  for (let b = 0; b * C.trendBucketMs < t1 - t0; b++) {\n    const lo = t0 + b * C.trendBucketMs, hi = lo + C.trendBucketMs;\n    const vs = [];\n    while (idx < inside.length && inside[idx].t < hi) { vs.push(inside[idx].v); idx++; }\n    if (vs.length) last = median(vs);\n    if (last !== null) pts.push({ x: (b * C.trendBucketMs + C.trendBucketMs / 2) / 60000, y: last });\n  }\n  if (pts.length < 12) return { cls: 'unknown', note: 'not enough coverage' };\n  const first = median(pts.filter((p) => p.x < 1).map((p) => p.y)), end = median(pts.filter((p) => p.x >= 4).map((p) => p.y));\n  const delta = end - first;\n  const cls = delta <= -C.trendMinDelta ? 'decreasing' : (delta >= C.trendMinDelta ? 'increasing' : 'steady');\n  return { cls, from: first, to: end, delta };\n}\n\n// OFF retries: every 3 s while the state is readable (on/off). While it is unavailable/unknown the command cannot succeed, so the gap doubles (3, 6, 12, 24, 48, 60 s) and stays at 60 s.\nconst unreadable = (v) => v !== 'on' && v !== 'off';\nfunction retryGap(key, st) {\n  if (!unreadable(st)) { s.offTry[key] = 0; return C.actuatorRetryMs; }\n  return Math.min(C.unknownBackoffMaxMs, C.actuatorRetryMs * Math.pow(2, Math.min(s.offTry[key] || 0, 5)));\n}\nfunction requestValveOff(force = false) {\n  if ((force || s.valve !== 'off') && now - (s.commandedAt.valveOff || 0) >= retryGap('valve', s.valve)) { cmd('turn_off', ids.valve); s.commandedAt.valveOff = now; if (unreadable(s.valve)) s.offTry.valve = (s.offTry.valve || 0) + 1; return true; }\n  return s.valve === 'off';\n}\nfunction requestPumpOff(force = false) {\n  if ((force || s.pump !== 'off') && now - (s.commandedAt.pumpOff || 0) >= retryGap('pump', s.pump)) { cmd('turn_off', ids.pump); s.commandedAt.pumpOff = now; if (unreadable(s.pump)) s.offTry.pump = (s.offTry.pump || 0) + 1; return true; }\n  return s.pump === 'off';\n}\nfunction requestValveOn() {\n  if (s.valve !== 'off' || s.pump !== 'off') return false;\n  if (now - (s.commandedAt.valveOn || 0) < C.actuatorRetryMs) return false;\n  cmd('turn_on', ids.valve); s.commandedAt.valveOn = now; return true;\n}\nfunction requestPumpOn() {\n  if (s.valve !== 'off' || s.pump !== 'off') return false;\n  cmd('turn_on', ids.pump); s.commandedAt.pumpOn = now; return true;\n}\n// The tank sensor only reports now and then (5 to 18 min apart) and returns NaN above 100 cm, where HA keeps the last good value. Estimate the level from the last reading and the recent fill rate (clamped 0.4 to 1.0 %/min).\nfunction tankRate() {\n  const n = Math.min(s.tankBuf.length, s.tankTs.length);\n  if (n < 2) return C.tankRateFloor;\n  const i0 = Math.max(0, n - 3);\n  const dt = (s.tankTs[n - 1] - s.tankTs[i0]) / 60000;\n  const r = dt > 0 ? (s.tankBuf[n - 1] - s.tankBuf[i0]) / dt : 0;\n  return Math.min(C.tankRateCeil, Math.max(C.tankRateFloor, r));\n}\nconst tankAgeMs = () => (s.lastSeen.tank ? now - s.lastSeen.tank : 0);\nfunction startAllowed() { return Number.isFinite(s.tank) && s.tank < C.tankStop && !(Number.isFinite(s.tankRaw) && s.tankRaw >= C.tankStop) && tankAgeMs() < C.startStaleMs && !s.done; }\n\n// Pump-probe mode: supply proven today but the valve sees no flow (low line pressure), so test with the pump every 15 min.\nfunction enterPP(why) {\n  s.fe.pp = true; s.fe.confirmed = true; s.fe.nextPumpAt = now + C.ppEveryMs; s.nextAt = s.fe.nextPumpAt; s.sub = 'pump_probe';\n  emit('state', `Pump probe mode (${why}): supply proven today, next pump test at ${t12(s.fe.nextPumpAt)}.`);\n}\n// After any pump stop decide what comes next.\nfunction afterStop(category, info) {\n  info = info || {};\n  if (category === 'target') {\n    s.done = true; s.sub = 'done';\n    emit('state', 'Completed fill: tank reached 95%. Probing stops for today.');\n    return;\n  }\n  if (!s.fe) return;\n  if (category === 'supply') {\n    if (info.pp && !info.accepted) s.fe.ppDry = (s.fe.ppDry || 0) + 1;\n    if ((s.fe.ppDry || 0) >= C.ppMaxDry && !s.fe.ppOff) { s.fe.ppOff = true; emit('state', 'Pump probe ran dry twice in a row; supply looks over, back to valve probing.'); }\n    if (s.fe.proven && !s.fe.ppOff) { enterPP(info.pp ? 'pump test found no water' : 'flow stopped while pumping'); return; }\n    s.fe.pp = false;\n    s.fe.confirmed = false; s.fe.streak = 0; s.fe.negs = 0; s.nextAt = nextProbeAt(); s.sub = 'confirming';\n    emit('state', 'Supply stopped while pumping; probing every 5 minutes to find it again.');\n  } else {\n    s.fe.pp = false;\n    s.fe.nextDrainAt = Math.max((s.fe.drainStartedAt || now) + C.drainEveryMs, now + 60000); s.nextAt = s.fe.nextDrainAt; s.sub = 'cooldown';\n    emit('state', `Back to drain tests: next one at ${t12(s.fe.nextDrainAt)} (5 minutes every 15).`);\n  }\n}\nfunction endPump(reason, category) {\n  requestPumpOff(); requestValveOff();\n  const wasAccepted = s.run ? Boolean(s.run.accepted) : null;\n  const info = { pp: Boolean(s.run && s.run.pp), accepted: Boolean(wasAccepted) };\n  s.run = null; s.phase = 'idle'; s.dryFrom = 0; s.badTdsFrom = 0; s.tankHighSince = 0; s.offRequestedAt = now;\n  s.stopCause = { at: now, category, reason, accepted: wasAccepted };\n  emit('safety', `Pump stop requested: ${reason}.`);\n  afterStop(category, info);\n}\nfunction startProbe(kind) {\n  if (s.valve !== 'off' || s.pump !== 'off') return false;\n  if (!requestValveOn()) return false;\n  s.phase = 'probe'; s.sub = kind === 'find' ? 'probing' : 'confirming'; s.probeStartedAt = now; s.valveUntil = now + C.probeOpenMs; s.nextAt = nextProbeAt();\n  s.probe = { opened: false, actSince: 0, active: false, flowMax: 0, firstAt: 0 };\n  emit('schedule', 'valve probe started; 10-second maximum.');\n  return true;\n}\nfunction startDrain() {\n  if (s.valve !== 'off' || s.pump !== 'off') return false;\n  if (!requestValveOn()) return false;\n  s.phase = 'drain'; s.sub = 'drain';\n  s.drain = { startedAt: now, noFlowSince: 0, flowMax: 0, result: null };\n  s.fe.drainStartedAt = now; s.fe.drainCount = (s.fe.drainCount || 0) + 1;\n  emit('state', `Drain test ${s.fe.drainCount} started: valve open for 5 minutes, watching the TDS trend.`);\n  return true;\n}\n\nif (msg.topic === 'ha_state') {\n  const root = msg.payload || msg.data || {};\n  const event = root.event || root;\n  const entity = event.entity_id || event.entityId || msg.entity_id;\n  const ns = event.new_state;\n  let value = ns && typeof ns === 'object' ? ns.state : (event.state !== undefined ? event.state : ns);\n  if (value && typeof value === 'object' && 'state' in value) value = value.state;\n  if (entity === ids.tds) {\n    const n = num(value); s.tds = Number.isFinite(n) ? n : null; s.lastSeen.tds = now;\n    if (Number.isFinite(n)) { s.tdsBuf.push({ t: now, v: n }); if (s.tdsBuf.length > 400) s.tdsBuf.splice(0, s.tdsBuf.length - 400); }\n  } else if (entity === ids.flow) {\n    const n = num(value); s.flow = Number.isFinite(n) ? n : null; s.lastSeen.flow = now;\n  } else if (entity === ids.tank) {\n    const n = num(value); s.tankRaw = Number.isFinite(n) ? n : null; s.lastSeen.tank = now;\n    if (Number.isFinite(n)) { s.tankBuf.push(n); s.tankTs.push(now); if (s.tankBuf.length > 5) { s.tankBuf.shift(); s.tankTs.shift(); } s.tank = median(s.tankBuf); }\n  } else if (entity === ids.runtime) {\n    const n = num(value); s.runtime = Number.isFinite(n) ? n : null;\n  } else if (entity === ids.valve) {\n    const was = s.valve; s.valve = String(value);\n    if (s.valve === 'on' && was !== 'on') s.valveOnSince = now;\n    if (s.valve !== 'on') s.valveOnSince = 0;\n  } else if (entity === ids.manual) {\n    const was = s.manual; s.manual = String(value) === 'on';\n    if (s.manual && !was) {\n      const prev = s.phase; s.manualSince = now; s.run = null; s.phase = 'manual'; s.sub = 'manual'; s.dryFrom = 0; s.badTdsFrom = 0; s.drain = null;\n      if (prev === 'probe' || prev === 'closing_for_pump' || prev === 'drain') requestValveOff(true);\n      if (s.fe) s.fe.manual = true;\n      emit('state', 'Manual control ON: the controller will not command the pump or valve (auto-return after 90 minutes).');\n    } else if (!s.manual && was) {\n      s.phase = 'idle'; s.nextAt = nextProbeAt(); s.manualSince = 0;\n      if (s.fe && s.fe.confirmed) s.fe.nextDrainAt = Math.max(s.fe.nextDrainAt || 0, now + 60000);\n      emit('state', 'Manual control OFF: the controller takes over again and will reconcile the pump and valve.');\n    }\n  } else if (entity === ids.pump) {\n    const previous = s.pump; s.pump = String(value);\n    if (s.pump === 'off') s.offRequestedAt = 0;\n    if (previous === 'on' && s.pump !== 'on' && s.phase === 'pumping') {\n      const runAge = s.run && s.run.startedAt ? now - s.run.startedAt : 0;\n      if (runAge >= C.runCapMs - 180000) {\n        // A stop within 3 minutes of the 120-minute limit is the run cap (e.g. the plug's own timer got there first), not a failure.\n        s.run = null; s.phase = 'idle'; s.stopCause = { at: now, category: 'cap', reason: 'single pump run reached the 120-minute limit (' + Math.round(runAge / 60000) + ' min, stopped by the plug)' };\n        emit('state', 'Pump stopped at the 120-minute run limit (' + Math.round(runAge / 60000) + ' min); counted as the run cap, not a failure.');\n        afterStop('cap');\n      } else {\n        s.run = null; s.phase = 'idle'; s.stopCause = { at: now, category: 'system', reason: 'pump stopped outside the controller' };\n        emit('state', 'Pump stopped outside an FSM stop request; counted as a system failure.');\n        afterStop('system');\n      }\n    }\n  }\n}\n\nif (msg.topic === 'tick') {\n  s.lastTick = now;\n  const date = istDate(now);\n  if (s.date !== date) {\n    s.date = date; s.done = false;\n    if (!s.run && s.phase !== 'manual') { s.fe = null; s.drain = null; s.nextAt = nextProbeAt(); }\n  }\n  if (s.manual) {\n    s.phase = 'manual'; s.sub = 'manual';\n    if (now - (s.manualSince || now) >= C.manualMaxMs && now - (s.commandedAt.manualOff || 0) >= 10000) {\n      out.push({ payload: { action: 'input_boolean.turn_off', target: { entity_id: ids.manual } } });\n      s.commandedAt.manualOff = now;\n      emit('state', 'Manual control reached its 90-minute limit; returning to automatic.');\n    }\n    global.set('waterLeanState', s);\n    return [out.length ? out : null, log.length ? log : null];\n  }\n  if (!s.started) {\n    s.started = true;\n    if (s.pump !== 'off') requestPumpOff(true);\n    if (s.valve !== 'off') requestValveOff(true);\n    s.phase = 'waiting_state'; s.sub = 'waiting_state';\n    emit('safety', 'Startup interlock check; waiting for live Home Assistant actuator states.');\n  }\n  if (s.pump === 'on' && s.valve === 'on') {\n    requestPumpOff(); requestValveOff();\n    s.phase = 'interlock_fault'; s.run = null; s.drain = null; s.nextAt = now + C.actuatorRetryMs;\n    s.stopCause = { at: now, category: 'system', reason: 'pump and valve both on' };\n    emit('fault', 'Pump and drain valve were both reported ON; both OFF commands issued, pump first.');\n  } else if (s.phase === 'interlock_fault') {\n    requestPumpOff(); requestValveOff();\n    if (s.pump === 'off' && s.valve === 'off') { s.phase = 'idle'; s.nextAt = nextProbeAt(); emit('safety', 'Interlock recovered with both actuators confirmed OFF.'); }\n  }\n  const known = ['on', 'off'].includes(s.pump) && ['on', 'off'].includes(s.valve);\n  if (!known) {\n    if (s.pump !== 'off') requestPumpOff();\n    if (s.valve !== 'off') requestValveOff();\n    if (s.phase !== 'waiting_state') emit('fault', 'Actuator state unknown; no new ON command will be issued.');\n    if (!s.unavailSince) s.unavailSince = now;\n    s.phase = 'waiting_state'; s.sub = 'waiting_state';\n  } else if (s.phase === 'waiting_state') {\n    s.phase = 'idle'; s.nextAt = nextProbeAt();\n    emit('state', 'Live actuator states received' + (s.unavailSince ? ' after ' + Math.round((now - s.unavailSince) / 60000) + ' min' : '') + '; controller resumed in a safe idle state.');\n    s.unavailSince = 0; s.offTry = { pump: 0, valve: 0 }; s.commandedAt.pumpOff = 0; s.commandedAt.valveOff = 0;\n  } else if (s.unavailSince) { s.unavailSince = 0; s.offTry = { pump: 0, valve: 0 }; }\n  if (s.pump === 'on' && s.phase === 'closing_for_pump' && s.valve === 'off') { s.phase = 'pumping'; }\n  // Our own stop request is still being confirmed by the plug (it can take several seconds): keep asking for OFF and do not adopt the running pump as a new run.\n  const offPending = s.offRequestedAt > 0 && now - s.offRequestedAt < 30000;\n  if (offPending && s.pump === 'on' && s.phase !== 'pumping' && s.phase !== 'interlock_fault') requestPumpOff();\n  if (s.pump === 'on' && s.phase !== 'pumping' && s.phase !== 'interlock_fault' && !offPending) {\n    s.phase = 'pumping';\n    if (!s.run) { s.run = { startedAt: now, accepted: true, adopted: true }; s.dryFrom = 0; s.badTdsFrom = 0; }\n  }\n  if (s.valve === 'on' && s.pump === 'off' && s.phase !== 'probe' && s.phase !== 'drain' && s.phase !== 'closing_for_pump') requestValveOff();\n  const vmax = s.phase === 'drain' ? C.drainMs + 30000 : C.valveMaxMs;\n  if (s.valve === 'on' && s.valveOnSince && now - s.valveOnSince > vmax) requestValveOff(true);\n\n  // Valve probe (10 s): flow above the floor held for 2 s.\n  if (s.phase === 'probe') {\n    if (s.valve === 'on') {\n      s.probe.opened = true;\n      if (Number.isFinite(s.flow) && s.flow > P.flowFloor) {\n        s.probe.flowMax = Math.max(s.probe.flowMax, s.flow);\n        if (!s.probe.actSince) s.probe.actSince = now;\n        if (now - s.probe.actSince >= C.flowHoldMs && !s.probe.active) { s.probe.active = true; s.probe.firstAt = s.probe.actSince; }\n      } else s.probe.actSince = 0;\n    }\n    if (now >= s.valveUntil) {\n      requestValveOff();\n      const a = s.probe.active && s.probe.opened;\n      emit('schedule', `Probe result: activity=${a}, good=false.`);\n      const tdsP = median(tdsDuring(s.probeStartedAt, now));\n      if (a) {\n        if (!s.fe) {\n          // First flow: no confirmation probe; stop probing for 33 minutes (early water is contaminated), then drain tests.\n          const ff = s.probe.firstAt || s.probeStartedAt;\n          s.fe = { firstFlowAt: ff, streak: 1, negs: 0, confirmed: true, confirmedAt: now, drainCount: 0, tdsNoted: tdsP === null ? null : Math.round(tdsP) };\n          s.fe.nextDrainAt = Math.max(ff + C.holdAfterFlowMs, now);\n          emit('state', `Flow detected at ${t12(ff)} (valve probe); TDS ${s.fe.tdsNoted === null ? 'n/a' : s.fe.tdsNoted + ' ppm'}. Probing paused until the first drain test at ${t12(s.fe.nextDrainAt)}.`);\n        } else {\n          s.fe.streak += 1; s.fe.negs = 0;\n          if (!s.fe.confirmed) {\n            s.fe.confirmed = true; s.fe.confirmedAt = now; s.fe.nextDrainAt = Math.max(s.fe.firstFlowAt + C.holdAfterFlowMs, now);\n            emit('state', `Flow found again; next drain test at ${t12(s.fe.nextDrainAt)}.`);\n          }\n        }\n      } else if (s.fe) {\n        s.fe.streak = 0; s.fe.negs += 1;\n        if (s.fe.proven && !s.fe.ppOff) enterPP('valve probe saw no flow');\n        else if (s.fe.negs >= C.dropAfterNegs) { emit('state', 'No flow on 3 probes in a row; the flow event has ended.'); s.fe = null; }\n      }\n      s.phase = 'idle'; s.nextAt = s.fe && s.fe.pp ? s.fe.nextPumpAt : (s.fe && s.fe.confirmed ? s.fe.nextDrainAt : nextProbeAt());\n    }\n  }\n\n  // Drain test (5 min, valve open): stop early if the flow ends, otherwise judge the TDS trend.\n  if (s.phase === 'drain' && s.drain) {\n    const d = s.drain;\n    if (s.valve === 'on') {\n      if (Number.isFinite(s.flow) && s.flow > P.flowFloor) { d.noFlowSince = 0; d.flowMax = Math.max(d.flowMax, s.flow); }\n      else if (!d.noFlowSince) d.noFlowSince = now;\n    } else if (now - d.startedAt > C.drainOpenWaitMs) {\n      requestValveOff(); s.phase = 'idle'; s.drain = null; s.fe.nextDrainAt = now + 60000; s.nextAt = s.fe.nextDrainAt;\n      emit('safety', 'Drain valve did not open; drain test cancelled.');\n    }\n    if (s.phase === 'drain' && d.noFlowSince && now - d.noFlowSince >= C.drainNoFlowMs) {\n      requestValveOff(); s.drain = null; s.phase = 'idle';\n      if (s.fe.proven && !s.fe.ppOff) enterPP('drain test saw no flow');\n      else {\n        s.fe.confirmed = false; s.fe.streak = 0; s.fe.negs = 0; s.nextAt = nextProbeAt(); s.sub = 'confirming';\n        emit('state', 'Drain test stopped: the flow ended. Probing every 5 minutes to find it again.');\n      }\n    } else if (s.phase === 'drain' && now - d.startedAt >= C.drainMs) {\n      requestValveOff();\n      const r = classifyTrend(d.startedAt, now);\n      d.result = r;\n      const fmt = r.from === undefined ? r.note : `${Math.round(r.from)} to ${Math.round(r.to)} ppm`;\n      s.fe.lastTrend = { cls: r.cls, from: r.from, to: r.to, at: now };\n      const stableOk = r.cls === 'steady' && inBand(r.to);\n      const wantPump = r.cls === 'decreasing' || stableOk;\n      const label = r.cls === 'steady' ? (stableOk ? 'steady inside the accepted range' : 'steady outside the accepted range') : r.cls;\n      if (wantPump && startAllowed()) {\n        emit('state', `Drain test ${s.fe.drainCount} result: TDS ${label} (${fmt}); starting a 50-second pump pulse.`);\n        s.phase = 'closing_for_pump'; s.closingSince = now;\n      } else {\n        emit('state', `Drain test ${s.fe.drainCount} result: TDS ${label} (${fmt}); no pump this time.`);\n        s.phase = 'idle'; s.fe.nextDrainAt = Math.max(d.startedAt + C.drainEveryMs, now + 60000); s.nextAt = s.fe.nextDrainAt; s.sub = 'cooldown';\n        if (wantPump && !startAllowed()) {\n          if (tankAgeMs() >= C.startStaleMs) emit('state', `Tank sensor has not reported for ${Math.round(tankAgeMs() / 60000)} min; no pump start until it reports again.`);\n          else { s.done = true; s.sub = 'done'; emit('state', 'Tank is already full; probing stops for today.'); }\n        }\n      }\n    }\n  }\n  if (s.phase === 'closing_for_pump') {\n    requestValveOff();\n    if (s.valve === 'off' && s.pump === 'off' && startAllowed()) {\n      if (requestPumpOn()) {\n        s.phase = 'pumping'; s.sub = 'pumping'; s.run = { startedAt: now, accepted: false }; s.dryFrom = 0; s.badTdsFrom = 0; s.tankHighSince = 0;\n        emit('state', 'Pump started only after valve OFF was confirmed and the drain test passed.');\n      }\n    } else if (now - s.closingSince > 20000) {\n      requestValveOff(); s.phase = 'idle'; s.fe.nextDrainAt = now + 60000; s.nextAt = s.fe.nextDrainAt;\n      emit('safety', 'Valve closure not confirmed promptly; pump start cancelled.');\n    }\n  }\n\n  // Pump running: dry run, 50 s pulse check, rolling TDS, tank 95% and run cap.\n  if (s.phase === 'pumping' && s.pump === 'on' && s.run) {\n    s.sub = s.run.accepted ? 'filling' : 'pumping';\n    const age = now - s.run.startedAt;\n    const flowZero = !(Number.isFinite(s.flow) && s.flow > 0);\n    if (flowZero && age >= C.startGraceMs) {\n      if (!s.dryFrom) s.dryFrom = now;\n      if (now - s.dryFrom >= C.dryMs) endPump(s.run.pp ? 'pump probe: dry run, flow was zero for 3 seconds' : 'dry run: flow was zero for 3 seconds', 'supply');\n    } else if (!flowZero) s.dryFrom = 0;\n    if (s.phase === 'pumping' && !s.run.accepted) {\n      if (age >= C.pulseMs) {\n        const lastR = s.tdsBuf.length ? s.tdsBuf[s.tdsBuf.length - 1] : null;\n        if (lastR && now - lastR.t <= 6000 && inBand(lastR.v)) { s.run.accepted = true; s.sub = 'filling'; emit('state', `${s.run.pp ? 'Pump probe found water; pump' : 'Pump'} accepted: last TDS reading ${Math.round(lastR.v)} ppm after ${Math.round(age / 1000)} s.`); }\n        else endPump(`TDS out of range at the end of the ${Math.round(C.pulseMs / 1000)}-second check (last reading ${lastR ? Math.round(lastR.v) : 'n/a'} ppm); waiting for the next drain test`, 'quality');\n      }\n    } else if (s.phase === 'pumping') {\n      const m = median(s.tdsBuf.slice(-C.rollN).map((x) => x.v));\n      if (m !== null && !inBand(m)) {\n        if (!s.badTdsFrom) s.badTdsFrom = now;\n        if (now - s.badTdsFrom >= C.badTdsMs) endPump(`TDS left the acceptable band (median ${Math.round(m)} ppm)`, 'quality');\n      } else s.badTdsFrom = 0;\n    }\n    // v3.4: prove today's supply on an accepted run; on pump-probe fills, stop if the tank is not rising.\n    if (s.phase === 'pumping' && s.run && s.run.accepted) {\n      if (!Number.isFinite(s.run.tank0) && Number.isFinite(s.tank)) s.run.tank0 = s.tank;\n      if (s.fe && !s.fe.proven && age >= C.provenMs && Number.isFinite(s.tank) && Number.isFinite(s.run.tank0) && s.tank - s.run.tank0 >= C.provenRise && Number.isFinite(s.flow) && s.flow > P.flowFloor && !s.badTdsFrom) {\n        s.fe.proven = now;\n        emit('state', `Supply proven today: tank up ${Math.round(s.tank - s.run.tank0)} points with good flow and TDS; weak valve checks will now be covered by pump probes.`);\n      }\n      if (s.run.pp && s.fe) {\n        if (!s.run.riseRef) { s.run.riseRef = { t: now, v: s.tank }; s.fe.ppDry = 0; }\n        else if (now - s.run.riseRef.t >= C.noRiseMs && s.lastSeen.tank > s.run.riseRef.t && Number.isFinite(s.tank) && Number.isFinite(s.run.riseRef.v)) {\n          const rise = s.tank - s.run.riseRef.v;\n          if (rise < C.noRiseMin) { s.fe.ppOff = true; endPump(`pump probe fill: tank rose only ${Math.round(rise * 10) / 10} points in 20 minutes; pump probes end for today`, 'supply'); }\n          else s.run.riseRef = { t: now, v: s.tank };\n        }\n      }\n    }\n    if (s.phase === 'pumping') {\n      // Stop at 95%: two readings in a row, or the tank held at/above 95% for 3 minutes (the sensor only reports when the value changes), or 97% at once.\n      const raw = Number.isFinite(s.tankRaw) ? s.tankRaw : null;\n      if (raw !== null && raw >= C.tankStop) { if (!s.tankHighSince) s.tankHighSince = now; } else s.tankHighSince = 0;\n      const t = s.tankBuf.slice(-3);\n      const twoReadings = t.length >= 2 && t[t.length - 1] >= C.tankStop && t.filter((x) => x >= C.tankStop).length >= 2;\n      const held = s.tankHighSince > 0 && now - s.tankHighSince >= C.tankHoldMs;\n      const veryHigh = raw !== null && raw >= C.tankHardStop;\n      const ageMin = tankAgeMs() / 60000;\n      const estLevel = raw !== null ? raw + tankRate() * ageMin : null;\n      const blind = raw !== null && ageMin >= C.tankBlindMinAgeMin && raw >= C.tankBlindFrom && estLevel >= C.tankBlindStop;\n      const silent = s.lastSeen.tank > 0 && tankAgeMs() >= C.tankSilentMs;\n      if (twoReadings || held || veryHigh) endPump(veryHigh && !twoReadings && !held ? 'tank reached 97%' : 'tank reached 95%', 'target');\n      else if (blind) endPump(`tank sensor silent for ${Math.round(ageMin)} min after ${Math.round(raw)}%; estimated level ${Math.round(estLevel)}% (the sensor reads nothing above 100 cm)`, 'target');\n      else if (silent) { emit('fault', `Tank sensor silent for ${Math.round(ageMin)} minutes; the pump is stopped until it reports again.`); endPump(`tank sensor silent for ${Math.round(ageMin)} minutes`, 'system'); }\n    }\n    if (s.phase === 'pumping' && age >= C.runCapMs) endPump('single pump run reached the 120-minute limit', 'cap');\n  }\n\n  // Dispatcher while nothing is actively running.\n  if (s.phase === 'idle' && s.pump === 'off' && s.valve === 'off') {\n    if (s.done) s.sub = 'done';\n    else if (!s.fe) {\n      s.sub = inWindow() ? 'probing' : 'idle';\n      if (inWindow() && now >= s.nextAt) startProbe('find');\n    } else if (s.fe.pp) {\n      s.sub = 'pump_probe'; s.nextAt = s.fe.nextPumpAt;\n      if (!inWindow()) { s.fe = null; s.drain = null; s.sub = 'idle'; s.nextAt = nextProbeAt(); node.log('Probe window closed; pump probe mode ended.'); }\n      else if (now >= s.fe.nextPumpAt) {\n        if (startAllowed()) {\n          if (requestPumpOn()) {\n            s.phase = 'pumping'; s.sub = 'pumping'; s.run = { startedAt: now, accepted: false, pp: true }; s.dryFrom = 0; s.badTdsFrom = 0; s.tankHighSince = 0;\n            emit('state', 'Pump probe: the valve sees no flow, testing with the pump for 50 seconds.');\n          }\n        } else if (Number.isFinite(s.tankRaw) && s.tankRaw >= C.tankStop) { s.done = true; s.sub = 'done'; emit('state', 'Tank is already full; probing stops for today.'); }\n        else { s.fe.nextPumpAt = now + C.ppEveryMs; s.nextAt = s.fe.nextPumpAt; emit('state', `Pump probe skipped: tank sensor not reporting; next try at ${t12(s.fe.nextPumpAt)}.`); }\n      }\n    } else if (!s.fe.confirmed) {\n      s.sub = 'confirming';\n      if (now >= s.nextAt) startProbe('confirm');\n    } else if (now < s.fe.nextDrainAt) {\n      s.sub = s.fe.drainCount ? 'cooldown' : 'waiting_30'; s.nextAt = s.fe.nextDrainAt;\n    } else if (inWindow()) {\n      if (Number.isFinite(s.tankRaw) && s.tankRaw >= C.tankStop) { s.done = true; s.sub = 'done'; emit('state', 'Tank is already full; probing stops for today.'); }\n      else startDrain();\n    } else { s.fe = null; s.drain = null; s.sub = 'idle'; s.nextAt = nextProbeAt(); node.log('Probe window closed; flow episode ended.'); }\n  }\n  s.day = s.ev ? 'water' : 'pending';\n}\nglobal.set('waterLeanState', s);\nreturn [out.length ? out : null, log.length ? log : null];",
     "outputs": 2,
@@ -1530,7 +1523,7 @@
     "finalize": "",
     "libs": [],
     "x": 720,
-    "y": 140,
+    "y": 1740,
     "wires": [
       [
         "wl-action",
@@ -1546,7 +1539,7 @@
   {
     "id": "wl-events",
     "type": "function",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Event layer: grade supply events (Lean)",
     "func": "// Water System Lean event layer v6: supply event (kind 'supply'), fill event, successful fill (80%), completed fill (95%), failed fill. Mode good or manual.\n// v4 (31 Oct 2026): a controller flow episode (s.fe) opens an event only inside the probe window; one-time cleanup of phantom after-window events.\n// v5 (2 Nov 2026): successful-fill mark raised from 65% to 80% (completed stays 95%). Weak flow is only recorded (weakMs/weakFlow), never stops the pump.\n// v6 (7 Nov 2026): one supply event per day. Flow loss inside the probe window no longer closes it (weak peak-hour flow is still supply); it closes only outside the window after 30 min quiet, or on completed fill. Later activity the same day continues that day's event.\nconst s = global.get('waterLeanState');\nif (!s) return null;\nconst now = Date.now();\nconst LP = global.get('leanParams') || {};\nconst band = { min: Number(LP.tdsMin) || 100, max: Number(LP.tdsMax) || 240 };\nconst FF = Number(LP.flowFloor) || 2;\nconst WS = Number(LP.windowStartMin) || 720, WE = Number(LP.windowEndMin) || 1080;\nconst C = { stableMs: 3000, tdsGraceMs: 45000, tdsWindow: 30, weakPumpFlow: 25, weakFlowMs: 600000, successTank: 80, tankHoldMs: 60000, supplyEndMs: 1800000, manualAcceptMs: 50000, qualRefMs: 60000, qualEveryMs: 30000, qualGapMs: 600000 };\nfor (const [k, v] of Object.entries({ ev: null, events: [], seq: 0, actSince: 0, obsAt: 0, obsPumpOn: false, obsPumpSince: 0, qRing: [], tankTargetSince: 0 })) if (s[k] === undefined) s[k] = v;\nconst log = [];\nconst emit = (topic, payload) => log.push({ topic, payload });\nconst date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(now));\nconst minOf = (ms) => { const q = {}; for (const x of new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ms))) if (x.type !== 'literal') q[x.type] = x.value; return Number(q.hour) * 60 + Number(q.minute); };\nconst mNow = minOf(now);\nconst outsideWindow = mNow < WS || mNow >= WE;\nconst median = (a) => { if (!a.length) return null; const x = a.slice().sort((p, q) => p - q); const m = x.length >> 1; return x.length % 2 ? x[m] : (x[m - 1] + x[m]) / 2; };\nfunction tdsMedian(since) {\n  const a = (s.tdsBuf || []).filter((x) => x.t >= since).slice(-C.tdsWindow).map((x) => x.v);\n  return a.length < 3 ? null : median(a);\n}\nfunction openEvent() {\n  const last = s.events.length ? s.events[s.events.length - 1] : null;\n  if (last && String(last.id).slice(0, 10) === date && !last.completedAt) {\n    s.events.pop(); s.ev = last;\n    delete last.closedAt; delete last.grade; delete last.reason; delete last.closeDate;\n    last.lastActivityAt = now; last.reopens = (last.reopens || 0) + 1;\n    emit('event', `Event ${last.id} continued: same day's supply event resumed.`);\n    return;\n  }\n  s.seq = (s.seq || 0) + 1;\n  s.ev = {\n    id: `${date}-${String(s.seq).padStart(2, '0')}`, openedAt: now, kind: 'supply', lastActivityAt: now,\n    tankStart: Number.isFinite(s.tank) ? s.tank : null, tankMax: Number.isFinite(s.tank) ? s.tank : null, tankEnd: Number.isFinite(s.tank) ? s.tank : null,\n    targetMet: false, runs: 0, runMs: 0, lastFail: null, peakFlow: 0, tdsMin: null, tdsMax: null, failedFills: 0, everAccepted: false, acceptedRun: false, successAt: 0, completedAt: 0,\n    mode: 'good', firstFlowAt: s.fe ? s.fe.firstFlowAt : now, tdsNoted: null, drains: 0\n  };\n  emit('event', `Event ${s.ev.id} opened: supply event (flow detected, pump not started yet).`);\n}\nfunction closeEvent(reason) {\n  const e = s.ev;\n  if (!e) return;\n  const supplyMs = Math.max(0, (e.lastActivityAt || e.openedAt) - e.openedAt);\n  e.supplyMin = Math.round(supplyMs / 60000);\n  let grade;\n  if (Number.isFinite(e.tankStart) && e.tankStart >= 95) grade = 'not_needed';\n  else if (e.successAt) grade = 'successful';\n  else if (e.kind === 'failed' || (e.failedFills > 0 && !e.everAccepted)) grade = 'unsuccessful_quality';\n  else if (e.everAccepted || e.runs > 0) grade = e.lastFail === 'system' ? 'unsuccessful_system' : (e.lastFail === 'quality' ? 'unsuccessful_quality' : 'unsuccessful_supply');\n  else grade = 'brief_supply';\n  e.closedAt = now; e.grade = grade; e.reason = reason; e.closeDate = date;\n  s.events.push(e);\n  if (s.events.length > 40) s.events.shift();\n  s.ev = null; s.tankTargetSince = 0; s.qRing = [];\n  emit('event', `Event ${e.id} closed: ${grade} (${reason}, ${e.mode} supply event); ${e.runs} pump run(s), ${Math.round(e.runMs / 60000)} min pumped.`);\n}\n// Phantom: opened outside the probe window from a leftover flow episode, with no pump run and no real activity.\nconst phantom = (e) => Boolean(e && e.runs === 0 && (e.lastActivityAt || e.openedAt) === e.openedAt && (minOf(e.openedAt) < WS || minOf(e.openedAt) >= WE));\nif (s.phantomSweep !== date) {\n  s.phantomSweep = date;\n  const before = s.events.length;\n  s.events = s.events.filter((e) => !(e.grade === 'brief_supply' && phantom(e)));\n  const removed = before - s.events.length;\n  let dropped = false;\n  if (s.ev && phantom(s.ev)) { s.ev = null; s.tankTargetSince = 0; s.qRing = []; dropped = true; }\n  if (removed || dropped) node.log(`Phantom sweep: removed ${removed} closed event(s)${dropped ? ' and the open one' : ''}.`);\n}\nconst dt = Math.min(5000, Math.max(0, now - (s.obsAt || now))); s.obsAt = now;\nconst pumpOn = s.pump === 'on', valveOn = s.valve === 'on';\nconst flowOk = Number.isFinite(s.flow);\nlet activity = false;\nif (flowOk && s.flow > 0 && pumpOn) activity = true;\nelse if (flowOk && s.flow > FF && valveOn) activity = true;\nif (activity) { if (!s.actSince) s.actSince = now; } else s.actSince = 0;\nconst counted = activity && now - s.actSince >= C.stableMs;\nif ((counted || (s.fe && !outsideWindow)) && !s.ev && !s.done) { openEvent(); if (!s.fe && pumpOn) s.ev.mode = 'manual'; if (pumpOn) { s.ev.runs += 1; s.obsPumpOn = true; s.obsPumpSince = s.obsPumpSince || now; } }\nif (!s.ev) { s.obsPumpOn = pumpOn; s.obsPumpSince = pumpOn ? (s.obsPumpSince || now) : 0; }\nelse {\n  const e = s.ev;\n  if (counted) e.lastActivityAt = now;\n  if (s.manual) e.manualMs = (e.manualMs || 0) + dt;\n  if (s.manual || (s.fe && s.fe.manual)) e.mode = 'manual';\n  if (s.fe) { e.firstFlowAt = e.firstFlowAt || s.fe.firstFlowAt; if (s.fe.tdsNoted !== null && s.fe.tdsNoted !== undefined) e.tdsNoted = s.fe.tdsNoted; e.drains = Math.max(e.drains || 0, s.fe.drainCount || 0); }\n  if (s.stopCause && s.stopCause.at > (e.stopSeen || 0) && s.stopCause.at >= e.openedAt) {\n    const sc = s.stopCause;\n    e.stopSeen = sc.at;\n    e.lastFail = sc.category === 'quality' ? 'quality' : (sc.category === 'supply' ? 'supply' : (sc.category === 'system' ? 'system' : e.lastFail));\n    if (sc.category === 'quality' && sc.accepted === false) {\n      e.failedFills = (e.failedFills || 0) + 1;\n      if (e.kind !== 'successful' && e.kind !== 'completed') { e.kind = 'failed'; emit('event', `Event ${e.id}: failed fill event, TDS not accepted (${sc.reason}); the next probe will retry.`); }\n    }\n  }\n  if (pumpOn && !s.obsPumpOn) { e.runs += 1; s.obsPumpSince = now; }\n  if (pumpOn && !s.obsPumpSince) s.obsPumpSince = now;\n  if (!pumpOn) { s.obsPumpSince = 0; e.acceptedRun = false; e.q = null; s.qRing = []; }\n  s.obsPumpOn = pumpOn;\n  const lastT = (s.tdsBuf || []).length ? s.tdsBuf[s.tdsBuf.length - 1] : null;\n  const tdsOk = Boolean(lastT && now - lastT.t <= 6000 && lastT.v >= band.min && lastT.v <= band.max);\n  if (pumpOn) {\n    e.runMs += dt;\n    if (flowOk) {\n      e.peakFlow = Math.max(e.peakFlow || 0, s.flow);\n      e.flowArea = (e.flowArea || 0) + s.flow * dt; e.flowMs = (e.flowMs || 0) + dt;\n      if (s.flow < C.weakPumpFlow) e.weakMs = (e.weakMs || 0) + dt;\n      e.minFlow = (e.minFlow === null || e.minFlow === undefined) ? s.flow : Math.min(e.minFlow, s.flow);\n      e.weakFlow = (e.weakMs || 0) >= C.weakFlowMs;\n      s.qRing.push(s.flow); if (s.qRing.length > 60) s.qRing.shift();\n    }\n    const tm = tdsMedian((s.obsPumpSince || now) + C.tdsGraceMs);\n    if (tm !== null) {\n      e.tdsMin = (e.tdsMin === null || e.tdsMin === undefined) ? tm : Math.min(e.tdsMin, tm);\n      e.tdsMax = (e.tdsMax === null || e.tdsMax === undefined) ? tm : Math.max(e.tdsMax, tm);\n    }\n    const byController = Boolean(s.run && s.run.accepted && !s.run.adopted);\n    const byHand = Boolean((s.manual || (s.run && s.run.adopted)) && tdsOk && s.obsPumpSince && now - s.obsPumpSince >= C.manualAcceptMs);\n    if ((byController || byHand) && !e.acceptedRun) {\n      e.acceptedRun = true; e.everAccepted = true; e.acceptedAt = now; e.q = null;\n      if (e.kind !== 'successful' && e.kind !== 'completed') { e.kind = 'fill'; emit('event', `Event ${e.id}: fill event, TDS accepted (${Math.round(lastT ? lastT.v : s.tds)} ppm).`); }\n    }\n    if (e.acceptedRun) {\n      const last10 = (s.tdsBuf || []).slice(-10).map((x) => x.v);\n      const curT = last10.length >= 5 ? median(last10) : null;\n      const curF = s.qRing.length >= 20 ? median(s.qRing.slice(-30)) : null;\n      if (!e.q) { if (curT !== null && curF !== null && now - e.acceptedAt >= C.qualRefMs) e.q = { tds: curT, flow: curF, at: now, noteT: 0, noteF: 0 }; }\n      else if (now - e.q.at >= C.qualEveryMs && curT !== null && curF !== null) {\n        e.q.at = now;\n        const dT = curT - e.q.tds, dF = curF - e.q.flow;\n        if (Math.abs(dT) >= Math.max(25, 0.2 * e.q.tds) && now - e.q.noteT >= C.qualGapMs) {\n          const out = curT > band.max || curT < band.min;\n          emit('quality', `Water quality ${dT > 0 ? 'getting worse' : 'improving'}: TDS ${dT > 0 ? 'rose' : 'fell'} from ${Math.round(e.q.tds)} to ${Math.round(curT)} ppm (${out ? 'now outside' : 'still inside'} the ${band.min}-${band.max} ppm range).`);\n          e.q.tds = curT; e.q.noteT = now;\n        }\n        if (Math.abs(dF) >= Math.max(6, 0.3 * e.q.flow) && now - e.q.noteF >= C.qualGapMs) {\n          emit('quality', `Flow ${dF > 0 ? 'increased' : 'dropped'}: ${Math.round(e.q.flow)} to ${Math.round(curF)} L/min (${Math.round((dF / e.q.flow) * 100)}%).`);\n          e.q.flow = curF; e.q.noteF = now;\n        }\n      }\n    }\n  }\n  if (Number.isFinite(s.tank)) {\n    e.tankMax = Math.max(e.tankMax || 0, s.tank); e.tankEnd = s.tank;\n    if (s.tank >= C.successTank) {\n      if (!s.tankTargetSince) s.tankTargetSince = now;\n      if (e.everAccepted && !e.successAt && !(Number.isFinite(e.tankStart) && e.tankStart >= C.successTank) && now - s.tankTargetSince >= C.tankHoldMs) {\n        e.successAt = now; e.targetMet = true; e.kind = 'successful';\n        emit('event', `Event ${e.id}: successful fill event, tank reached ${C.successTank}% (the pump continues until 95%).`);\n      }\n    } else s.tankTargetSince = 0;\n  } else s.tankTargetSince = 0;\n  if (s.done && !e.completedAt) {\n    e.completedAt = now; e.kind = 'completed'; e.targetMet = true; if (!e.successAt) e.successAt = now;\n    emit('event', `Event ${e.id}: completed fill event, tank reached 95%.`);\n    closeEvent('completed fill, tank reached 95%');\n  } else if (!pumpOn && !valveOn && outsideWindow && now - (e.lastActivityAt || e.openedAt) >= C.supplyEndMs) closeEvent('supply day ended');\n}\nglobal.set('waterLeanState', s);\nreturn log.length ? [log] : null;",
     "outputs": 1,
@@ -1556,7 +1549,7 @@
     "finalize": "",
     "libs": [],
     "x": 720,
-    "y": 240,
+    "y": 1840,
     "wires": [
       [
         "wl-link-log",
@@ -1567,7 +1560,7 @@
   {
     "id": "wl-action",
     "type": "api-call-service",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Switch actions (pump, valve, manual switch)",
     "server": "7e55f602.47a88",
     "version": 7,
@@ -1586,7 +1579,7 @@
     "queue": "none",
     "blockInputOverrides": false,
     "x": 1040,
-    "y": 100,
+    "y": 1700,
     "wires": [
       []
     ]
@@ -1594,7 +1587,7 @@
   {
     "id": "wl-debug",
     "type": "debug",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Lean controller log",
     "active": true,
     "tosidebar": true,
@@ -1605,39 +1598,39 @@
     "statusVal": "payload",
     "statusType": "msg",
     "x": 1040,
-    "y": 200,
+    "y": 1800,
     "wires": []
   },
   {
     "id": "wl-link-cmd",
     "type": "link out",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "commands to the recorder",
     "mode": "link",
     "links": [
       "wu-lean-in-cmd"
     ],
     "x": 1040,
-    "y": 60,
+    "y": 1660,
     "wires": []
   },
   {
     "id": "wl-link-log",
     "type": "link out",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "log to the recorder and debug",
     "mode": "link",
     "links": [
       "wu-lean-in-log"
     ],
     "x": 1040,
-    "y": 260,
+    "y": 1860,
     "wires": []
   },
   {
     "id": "wl-learn-tick",
     "type": "inject",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Learn the supply window daily",
     "props": [
       {
@@ -1654,7 +1647,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 190,
-    "y": 380,
+    "y": 1980,
     "wires": [
       [
         "wl-learn-q"
@@ -1664,7 +1657,7 @@
   {
     "id": "wl-learn-manual",
     "type": "inject",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Learn the supply window now (manual)",
     "props": [
       {
@@ -1681,7 +1674,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 230,
-    "y": 440,
+    "y": 2040,
     "wires": [
       [
         "wl-learn-q"
@@ -1691,7 +1684,7 @@
   {
     "id": "wl-learn-q",
     "type": "function",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Build the history query",
     "func": "msg.topic=\"SELECT (SELECT MIN(CAST(substr(start_ist,1,2) AS INTEGER)*60+CAST(substr(start_ist,4,2) AS INTEGER)) FROM supply_history WHERE supply_day=1 AND start_ist IS NOT NULL) AS earliest_start, (SELECT MIN(CAST(strftime('%H',opened_at/1000+19800,'unixepoch') AS INTEGER)*60+CAST(strftime('%M',opened_at/1000+19800,'unixepoch') AS INTEGER)) FROM events WHERE closed_at IS NOT NULL AND grade NOT IN ('brief_supply','false_positive')) AS earliest_event_start, (SELECT MAX(CAST(strftime('%H',closed_at/1000+19800,'unixepoch') AS INTEGER)*60+CAST(strftime('%M',closed_at/1000+19800,'unixepoch') AS INTEGER)) FROM events WHERE closed_at IS NOT NULL AND grade NOT IN ('brief_supply','false_positive')) AS latest_end, (SELECT COUNT(*) FROM supply_history WHERE supply_day=1) AS supply_days, (SELECT COUNT(*) FROM events WHERE closed_at IS NOT NULL) AS events_seen\";\nmsg.payload=[];\nreturn msg;",
     "outputs": 1,
@@ -1701,7 +1694,7 @@
     "finalize": "",
     "libs": [],
     "x": 520,
-    "y": 400,
+    "y": 2000,
     "wires": [
       [
         "wl-learn-sqlite"
@@ -1711,13 +1704,13 @@
   {
     "id": "wl-learn-sqlite",
     "type": "sqlite",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "mydb": "wu-db",
     "sqlquery": "msg.topic",
     "sql": "",
     "name": "Read history (SQLite)",
     "x": 780,
-    "y": 400,
+    "y": 2000,
     "wires": [
       [
         "wl-learn-calc"
@@ -1727,7 +1720,7 @@
   {
     "id": "wl-learn-calc",
     "type": "function",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "Store window suggestion (does not change the window)",
     "func": "const r=(msg.payload&&msg.payload[0])||{};\nconst prev=Object.assign({},global.get('leanParams')||{});\nconst starts=[r.earliest_start,r.earliest_event_start].filter((x)=>Number.isFinite(x));\nconst ends=[r.latest_end].filter((x)=>Number.isFinite(x));\nconst start=starts.length?Math.max(360,Math.min(...starts)-60):null;\nconst end=ends.length?Math.min(1380,Math.max(...ends)+90):null;\nglobal.set('leanParams',Object.assign({},prev,{suggestedStartMin:start,suggestedEndMin:end,learnedAt:new Date().toISOString(),supplyDays:r.supply_days||0,eventsSeen:r.events_seen||0}));\nreturn null;",
     "outputs": 1,
@@ -1737,7 +1730,7 @@
     "finalize": "",
     "libs": [],
     "x": 1040,
-    "y": 400,
+    "y": 2000,
     "wires": [
       []
     ]
@@ -1745,21 +1738,15 @@
   {
     "id": "wl-link-tg",
     "type": "link out",
-    "z": "wl-tab",
+    "z": "wu-tab",
     "name": "live updates to Telegram",
     "mode": "link",
     "links": [
       "wt-notify-in"
     ],
     "x": 1040,
-    "y": 320,
+    "y": 1920,
     "wires": []
-  },
-  {
-    "type": "tab",
-    "label": "Water AI Diagnostics",
-    "id": "1c1e44c3921e65f4",
-    "info": "Read-only diagnostics for the Water AI layer. 'Read last ai_calls' -> global aiCallsTail. 'Bench models' -> global aiBench. 'Schema' -> global aiSchema."
   },
   {
     "id": "ai-diag-tick",
@@ -1782,13 +1769,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 80,
+    "y": 4120,
     "wires": [
       [
         "ai-diag-sql"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-diag-sql",
@@ -1798,13 +1785,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 380,
-    "y": 80,
+    "y": 4120,
     "wires": [
       [
         "ai-diag-store"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-diag-store",
@@ -1818,11 +1805,11 @@
     "finalize": "",
     "libs": [],
     "x": 600,
-    "y": 80,
+    "y": 4120,
     "wires": [
       []
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-bench-tick",
@@ -1841,19 +1828,19 @@
     "payload": "",
     "payloadType": "date",
     "x": 140,
-    "y": 180,
+    "y": 4220,
     "wires": [
       [
         "ai-bench-req"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-bench-req",
     "type": "function",
     "name": "One request per model (tool-call test)",
-    "func": "const models = ['nemotron-3-ultra-550b', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-flash-lite', 'gemini-2.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];\nglobal.set('aiBench', {});\nconst tools = [{ type: 'function', function: { name: 'get_tank_level', description: 'Returns the current water tank level in percent.', parameters: { type: 'object', properties: {}, required: [] } } }];\nconst base = global.get('omniUrl') || 'http://192.168.1.18:3001/v1';\nreturn [models.map(m => ({\n  benchModel: m, benchStart: Date.now(),\n  url: base + '/chat/completions', method: 'POST', requestTimeout: 90000,\n  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (global.get('omniKey') || '') },\n  payload: { model: m, max_tokens: 300, tools, messages: [{ role: 'user', content: 'What is the tank level right now? Use the tool.' }] }\n}))];",
+    "func": "const models = ['deepseek-flash', 'deepseek-v4-pro', 'nemotron-3-ultra-550b', 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'];\nglobal.set('aiBench', {});\nconst tools = [{ type: 'function', function: { name: 'get_tank_level', description: 'Returns the current water tank level in percent.', parameters: { type: 'object', properties: {}, required: [] } } }];\nconst base = global.get('omniUrl') || 'http://192.168.1.18:3001/v1';\nreturn [models.map(m => ({\n  benchModel: m, benchStart: Date.now(),\n  url: base + '/chat/completions', method: 'POST', requestTimeout: 90000,\n  headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (global.get('omniKey') || '') },\n  payload: { model: m, max_tokens: 300, tools, messages: [{ role: 'user', content: 'What is the tank level right now? Use the tool.' }] }\n}))];",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -1861,13 +1848,13 @@
     "finalize": "",
     "libs": [],
     "x": 400,
-    "y": 180,
+    "y": 4220,
     "wires": [
       [
         "ai-bench-http"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-bench-http",
@@ -1885,13 +1872,13 @@
     "senderr": false,
     "headers": [],
     "x": 630,
-    "y": 180,
+    "y": 4220,
     "wires": [
       [
         "ai-bench-store"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-bench-store",
@@ -1905,11 +1892,11 @@
     "finalize": "",
     "libs": [],
     "x": 840,
-    "y": 180,
+    "y": 4220,
     "wires": [
       []
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-schema-tick",
@@ -1932,13 +1919,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 280,
+    "y": 4320,
     "wires": [
       [
         "ai-schema-sql"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-schema-sql",
@@ -1948,13 +1935,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 380,
-    "y": 280,
+    "y": 4320,
     "wires": [
       [
         "ai-schema-store"
       ]
     ],
-    "z": "1c1e44c3921e65f4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-schema-store",
@@ -1968,17 +1955,11 @@
     "finalize": "",
     "libs": [],
     "x": 600,
-    "y": 280,
+    "y": 4320,
     "wires": [
       []
     ],
-    "z": "1c1e44c3921e65f4"
-  },
-  {
-    "type": "tab",
-    "label": "Water AI Core",
-    "id": "0639df67e2821cd4",
-    "info": "Phase 1 of the Water System AI Upgrade: ai-call service (roles, model pins, budget, retry/fallback, logging), model discovery, ai_calls table, kill switch input_boolean.water_ai_enabled. Callers use a link call node pointed at 'ai-call' with msg.ai = {role, caller, messages, tools?, maxTokens?, timeoutMs?, temperature?, responseFormat?}; the result comes back in msg.ai.result = {ok, outcome, model, text, toolCalls, message, usage, error}. LLM never actuates anything. Pins chosen 31 Oct 2026 from a tool-calling benchmark (Water AI Diagnostics tab)."
+    "z": "wu-tab"
   },
   {
     "id": "ai-cfg-tick",
@@ -1997,19 +1978,19 @@
     "payload": "",
     "payloadType": "date",
     "x": 170,
-    "y": 60,
+    "y": 2720,
     "wires": [
       [
         "ai-cfg"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-cfg",
     "type": "function",
     "name": "AI config: roles, model pins, budget (edit here)",
-    "func": "// Water AI core config. Edit here, then Deploy AND press the 'On start: AI config' inject (a node-only deploy does not re-run it).\n// PROVIDER: 'openwebui' or 'freellmapi'. Every AI path (ai-prep, ai-result, model list, bench) reads global omniUrl/omniKey set below.\n// The 'wb-llm' config node (observer report, forecast) has its own baseUrl/apiKey and must be switched by hand to match.\nconst PROVIDER = 'openwebui';\nif (!global.get('freellmKey') && global.get('omniKey') && String(global.get('omniUrl') || '').indexOf(':3001') >= 0) global.set('freellmKey', global.get('omniKey'));\nconst providers = {\n  openwebui:  { url: 'http://192.168.1.18:31028/api', key: 'sk-REDACTED' },\n  freellmapi: { url: 'http://192.168.1.18:3001/v1',   key: global.get('freellmKey') || '' }\n};\nconst pv = providers[PROVIDER];\nglobal.set('aiProvider', PROVIDER);\nglobal.set('omniUrl', pv.url);\nglobal.set('omniKey', pv.key);\n// models: first entry is the pin, then fallbacks; 'auto' is always added as the last fallback.\n// ai-prep skips any model the provider reports as not ready and any model parked after 429/503/timeout.\n// 2 Nov 2026: poolside-laguna-s-2.1 removed; gemini-3.6-flash added as agent/analyst fallback.\n// 2 Nov 2026: writer = 3.1-flash-lite, 3.5-flash-lite, flash-lite (2.5-flash-lite removed: 404 upstream).\nglobal.set('aiRoles', {\n  agent:   { models: ['nemotron-3-ultra-550b', 'gemini-3.6-flash'], maxTokens: 800,  timeoutMs: 45000 },\n  analyst: { models: ['nemotron-3-ultra-550b', 'gemini-3.6-flash'], maxTokens: 1200, timeoutMs: 60000 },\n  writer:  { models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-flash-lite'], maxTokens: 250, timeoutMs: 20000 }\n});\nglobal.set('aiBudget', { perHour: 80, softDay: 400, hardDay: 600, hardAllow: ['tg-owner', 'email-6pm'] });\nconst r = global.get('aiRoles');\nnode.status({ fill: 'green', shape: 'dot', text: PROVIDER + ' | agent ' + r.agent.models[0] + ' | writer ' + r.writer.models[0] });\nreturn null;",
+    "func": "// Water AI core config. Edit here, then Deploy AND press the 'On start: AI config' inject (a node-only deploy does not re-run it).\n// PROVIDER: 'openwebui' or 'freellmapi'. Every AI path (ai-prep, ai-result, model list, bench) reads global omniUrl/omniKey set below.\n// The 'wb-llm' config node (observer report, forecast) has its own baseUrl/apiKey and must be switched by hand to match.\nconst PROVIDER = 'openwebui';\nif (!global.get('freellmKey') && global.get('omniKey') && String(global.get('omniUrl') || '').indexOf(':3001') >= 0) global.set('freellmKey', global.get('omniKey'));\nconst providers = {\n  openwebui:  { url: 'http://192.168.1.18:31028/api', key: 'sk-REDACTED' },\n  freellmapi: { url: 'http://192.168.1.18:3001/v1',   key: global.get('freellmKey') || '' }\n};\nconst pv = providers[PROVIDER];\nglobal.set('aiProvider', PROVIDER);\nglobal.set('omniUrl', pv.url);\nglobal.set('omniKey', pv.key);\n// models: first entry is the pin, then fallbacks; 'auto' is always added as the last fallback.\n// ai-prep skips any model the provider reports as not ready and any model parked after 429/503/timeout.\n// 2 Nov 2026: poolside-laguna-s-2.1 removed; gemini-3.6-flash added as agent/analyst fallback.\n// 2 Nov 2026: writer = 3.1-flash-lite, 3.5-flash-lite, flash-lite (2.5-flash-lite removed: 404 upstream).\n// 7 Nov 2026: agent = gemini-3.6-flash first (fast, tool calls pass the bench); nemotron (thinking model, empty replies on long /insights) is now the fallback. Free models only.\nglobal.set('aiRoles', {\n  agent:   { models: ['gemini-3.6-flash', 'nemotron-3-ultra-550b'], maxTokens: 800,  timeoutMs: 45000 },\n  analyst: { models: ['nemotron-3-ultra-550b', 'gemini-3.6-flash'], maxTokens: 1200, timeoutMs: 60000 },\n  writer:  { models: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-flash-lite'], maxTokens: 250, timeoutMs: 20000 }\n});\nglobal.set('aiBudget', { perHour: 80, softDay: 400, hardDay: 600, hardAllow: ['tg-owner', 'email-6pm'] });\nconst r = global.get('aiRoles');\nnode.status({ fill: 'green', shape: 'dot', text: PROVIDER + ' | agent ' + r.agent.models[0] + ' | writer ' + r.writer.models[0] });\nreturn null;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -2017,11 +1998,11 @@
     "finalize": "",
     "libs": [],
     "x": 480,
-    "y": 60,
+    "y": 2720,
     "wires": [
       []
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-models-tick",
@@ -2040,13 +2021,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 190,
-    "y": 120,
+    "y": 2780,
     "wires": [
       [
         "ai-models-req"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-models-req",
@@ -2060,13 +2041,13 @@
     "finalize": "",
     "libs": [],
     "x": 440,
-    "y": 120,
+    "y": 2780,
     "wires": [
       [
         "ai-models-http"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-models-http",
@@ -2084,13 +2065,13 @@
     "senderr": false,
     "headers": [],
     "x": 640,
-    "y": 120,
+    "y": 2780,
     "wires": [
       [
         "ai-models-store"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-models-store",
@@ -2104,11 +2085,11 @@
     "finalize": "",
     "libs": [],
     "x": 880,
-    "y": 120,
+    "y": 2780,
     "wires": [
       []
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-ddl-tick",
@@ -2127,13 +2108,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 210,
-    "y": 180,
+    "y": 2840,
     "wires": [
       [
         "ai-ddl"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-ddl",
@@ -2147,13 +2128,13 @@
     "finalize": "",
     "libs": [],
     "x": 480,
-    "y": 180,
+    "y": 2840,
     "wires": [
       [
         "ai-db-batch"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-db-batch",
@@ -2163,11 +2144,11 @@
     "sqlquery": "batch",
     "sql": "",
     "x": 700,
-    "y": 180,
+    "y": 2840,
     "wires": [
       []
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-call-in",
@@ -2175,13 +2156,13 @@
     "name": "ai-call",
     "links": [],
     "x": 75,
-    "y": 300,
+    "y": 2960,
     "wires": [
       [
         "ai-prep"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-prep",
@@ -2195,7 +2176,7 @@
     "finalize": "",
     "libs": [],
     "x": 330,
-    "y": 300,
+    "y": 2960,
     "wires": [
       [
         "ai-http"
@@ -2204,7 +2185,7 @@
         "ai-call-out"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-delay",
@@ -2223,13 +2204,13 @@
     "allowrate": false,
     "outputs": 1,
     "x": 580,
-    "y": 360,
+    "y": 3020,
     "wires": [
       [
         "ai-http"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-http",
@@ -2247,13 +2228,13 @@
     "senderr": false,
     "headers": [],
     "x": 620,
-    "y": 300,
+    "y": 2960,
     "wires": [
       [
         "ai-result"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-result",
@@ -2267,7 +2248,7 @@
     "finalize": "",
     "libs": [],
     "x": 860,
-    "y": 300,
+    "y": 2960,
     "wires": [
       [
         "ai-delay"
@@ -2279,7 +2260,7 @@
         "ai-db-log"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-db-log",
@@ -2289,11 +2270,11 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 1120,
-    "y": 340,
+    "y": 3000,
     "wires": [
       []
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-call-out",
@@ -2302,9 +2283,9 @@
     "mode": "return",
     "links": [],
     "x": 1115,
-    "y": 280,
+    "y": 2940,
     "wires": [],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-test-tick",
@@ -2323,13 +2304,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 180,
-    "y": 460,
+    "y": 3120,
     "wires": [
       [
         "ai-test-req"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-test-req",
@@ -2343,13 +2324,13 @@
     "finalize": "",
     "libs": [],
     "x": 420,
-    "y": 460,
+    "y": 3120,
     "wires": [
       [
         "ai-test-call"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-test-call",
@@ -2361,13 +2342,13 @@
     "linkType": "static",
     "timeout": "150",
     "x": 620,
-    "y": 460,
+    "y": 3120,
     "wires": [
       [
         "ai-test-store"
       ]
     ],
-    "z": "0639df67e2821cd4"
+    "z": "wu-tab"
   },
   {
     "id": "ai-test-store",
@@ -2381,17 +2362,11 @@
     "finalize": "",
     "libs": [],
     "x": 840,
-    "y": 460,
+    "y": 3120,
     "wires": [
       []
     ],
-    "z": "0639df67e2821cd4"
-  },
-  {
-    "type": "tab",
-    "label": "Water AI Context & Tools",
-    "id": "b85f5d7c0944bfd3",
-    "info": "Phase 2 of the Water System AI Upgrade. ctx-build: one compact JSON context every 30 s (global aiCtx); link 'ai-ctx' returns it as msg.ctx. ai-tools: link call with msg.tool = {name, args, chat}; result in msg.toolResult. Read-only: SQL goes through a guard and a read-only database connection; no tool can switch the pump, valve, manual mode or settings. ai-agent: link call with msg.agent = {question, chat, caller, history?, extraSystem?}; runs the agent loop (ai-call + tools, max 6 tools) and returns msg.agentResult = {ok, text, tools, steps, model, ms, error}."
+    "z": "wu-tab"
   },
   {
     "id": "ctx-db-tick",
@@ -2410,13 +2385,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 210,
-    "y": 60,
+    "y": 3320,
     "wires": [
       [
         "ctx-db-q"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-db-q",
@@ -2430,13 +2405,13 @@
     "finalize": "",
     "libs": [],
     "x": 520,
-    "y": 60,
+    "y": 3320,
     "wires": [
       [
         "ctx-db-sql"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-db-sql",
@@ -2446,13 +2421,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 790,
-    "y": 60,
+    "y": 3320,
     "wires": [
       [
         "ctx-db-store"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-db-store",
@@ -2466,11 +2441,11 @@
     "finalize": "",
     "libs": [],
     "x": 1010,
-    "y": 60,
+    "y": 3320,
     "wires": [
       []
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-tick",
@@ -2489,19 +2464,19 @@
     "payload": "",
     "payloadType": "date",
     "x": 170,
-    "y": 120,
+    "y": 3380,
     "wires": [
       [
         "ctx-build"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-build",
     "type": "function",
     "name": "ctx-build: day timeline context (global aiCtx)",
-    "func": "const now = Date.now();\nconst tz = 'Asia/Kolkata';\nconst s = global.get('waterLeanState') || {};\nconst P = Object.assign({ windowStartMin: 720, windowEndMin: 1080, tdsMin: 100, tdsMax: 240 }, global.get('leanParams') || {});\nconst db = flow.get('ctxDb') || {};\nconst fmt = (o) => (ms) => ms ? new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: tz, hour12: true }, o)).format(new Date(ms)).replace(/\\u202f/g, ' ') : null;\nconst t12 = fmt({ month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });\nconst hm = fmt({ hour: 'numeric', minute: '2-digit' });\nconst clk = (m) => (Math.floor(m / 60) % 12 || 12) + ':' + String(m % 60).padStart(2, '0') + ' ' + (m < 720 ? 'AM' : 'PM');\nconst r1 = (v) => Number.isFinite(Number(v)) && v !== null ? Math.round(Number(v) * 10) / 10 : null;\nconst ageMin = (ms) => ms ? Math.round((now - ms) / 60000) : null;\nlet states = {};\ntry { states = global.get('homeassistant').homeAssistant.states || {}; } catch (e) {}\nconst st = (id) => (states[id] || {}).state;\nconst ids = { tds: 'sensor.esp32_motor_tds_sensor_ppm', flow: 'sensor.esp32_motor_water_flow_rate', tank: 'sensor.esp32_tank_water_level', runtime: 'sensor.water_motor_pump_runtime_today', valve: 'switch.esp32_motor_drain_valve_switch', pump: 'switch.water_motor_pump', manual: 'input_boolean.water_manual_control' };\nconst tc = global.get('timeCtx');\nconst tcFresh = Boolean(tc && now - tc.at < 180000);\nconst ls = s.lastSeen || {};\nconst tankAge = ageMin(ls.tank);\nconst trusted = Number.isFinite(s.tank) && Number.isFinite(s.tankRaw) && Math.abs(s.tank - s.tankRaw) <= 15 && tankAge !== null && tankAge <= 20;\nconst evSum = (e) => e ? {\n  id: e.id, kind: e.kind, grade: e.grade || null, mode: e.mode || null, opened: t12(e.openedAt), first_flow: hm(e.firstFlowAt), closed: t12(e.closedAt), reason: e.reason || null,\n  tank_start: r1(e.tankStart), tank_max: r1(e.tankMax), tank_end: r1(e.tankEnd), pump_runs: e.runs || 0, pump_min: e.runMs ? Math.round(e.runMs / 60000) : 0,\n  tds_min: r1(e.tdsMin), tds_max: r1(e.tdsMax), failed_fills: e.failedFills || 0, drain_tests: e.drains || 0, manual_min: e.manualMs ? Math.round(e.manualMs / 60000) : 0,\n  successful_at: hm(e.successAt), completed_at: hm(e.completedAt), supply_min: e.supplyMin || null\n} : null;\nconst run = s.run || null;\nconst health = {};\nObject.entries(ids).forEach(([k, id]) => { const v = st(id); if (v === undefined || v === 'unavailable' || v === 'unknown') health[k] = v === undefined ? 'missing' : v; });\nlet fc = null;\ntry { const wf = global.get('waterForecast'); fc = wf ? JSON.stringify(wf).slice(0, 700) : null; } catch (e) {}\nconst ww = global.get('waterWeek');\nconst data = {\n  built_at: t12(now),\n  now: { text: tcFresh ? tc.text : t12(now), date: s.date || null, day_type: s.day || null, today: tcFresh ? (tc.todayLine || null) : null, next: tcFresh ? (tc.nextLine || null) : null },\n  settings: { probe_window: clk(P.windowStartMin) + ' - ' + clk(P.windowEndMin), no_supply_day_probes: 'every 30 min, 12:00 PM - 4:00 PM', wait_after_first_flow_min: 33, tds_range_ppm: [Number(P.tdsMin) || 100, Number(P.tdsMax) || 240], successful_fill_pct: 80, completed_fill_pct: 95, learned_supply_window: P.suggestedStartMin ? clk(P.suggestedStartMin) + ' - ' + clk(P.suggestedEndMin) : null },\n  controller: {\n    phase: s.phase || null, sub: s.sub || null, manual_mode: Boolean(s.manual) || st(ids.manual) === 'on',\n    pump: st(ids.pump) || s.pump || null, valve: st(ids.valve) || s.valve || null,\n    pump_run_started: run && run.startedAt ? hm(run.startedAt) : null, run_tds_accepted: run ? Boolean(run.accepted) : null,\n    next_probe: s.nextAt && s.nextAt > now ? hm(s.nextAt) : null, done_for_today: Boolean(s.done), paused: Boolean(s.pause),\n    last_stop: s.stopCause ? { at: t12(s.stopCause.at), category: s.stopCause.category || null, reason: s.stopCause.reason || null } : null,\n    last_drain_test: s.drain && s.drain.result ? { at: hm(s.drain.startedAt), trend: s.drain.result.cls, tds_from: r1(s.drain.result.from), tds_to: r1(s.drain.result.to) } : null\n  },\n  live: { tank_filtered_pct: r1(s.tank), tank_raw_pct: r1(s.tankRaw), tank_sensor_trusted: trusted, flow_lpm: r1(s.flow), tds_ppm: r1(s.tds), pump_runtime_today_h: r1(s.runtime), reading_age_min: { tank: tankAge, flow: ageMin(ls.flow), tds: ageMin(ls.tds) } },\n  health: { unavailable: health, ai_enabled: st('input_boolean.water_ai_enabled') !== 'off' },\n  open_event: evSum(s.ev),\n  recent_events: (s.events || []).slice(-5).reverse().map(evSum),\n  today_timeline: (db.timeline || []).slice().reverse().map((r) => ({ at: hm(r.ts), topic: r.topic, text: String(r.text || '').slice(0, 160) })),\n  today_series_15min: (db.series || []).map((r) => ({ t: hm(r.t), tank: r.tank, flow: r.flow, tds: r.tds, w: r.w, pump: r.pump })),\n  recent_days: db.days || [],\n  forecast_now: fc,\n  forecast_week: ww && ww.weekText && now - (ww.at || 0) < 7200000 ? { next: ww.nextText, days: ww.weekText } : null,\n  forecast_history: (db.forecasts || []).map((r) => ({ at: t12(r.ts), kind: r.kind, day: r.day, p: r.p, confidence: r.confidence, reason: String(r.reason || '').slice(0, 120), outcome: r.outcome, correct: r.correct })),\n  open_anomalies: [],\n  db_age_min: ageMin(db.at)\n};\nconst size = JSON.stringify(data).length;\nglobal.set('aiCtx', { at: now, size, data });\nnode.status({ fill: 'green', shape: 'dot', text: (s.phase || '?') + ' | ' + Math.round(size / 1000) + 'k chars' });\nreturn null;",
+    "func": "// 7 Nov 2026: recent_events now comes from the one daily supply record (global supplyDays, built in the Unified tab): one row per day.\nconst now = Date.now();\nconst tz = 'Asia/Kolkata';\nconst s = global.get('waterLeanState') || {};\nconst P = Object.assign({ windowStartMin: 720, windowEndMin: 1080, tdsMin: 100, tdsMax: 240 }, global.get('leanParams') || {});\nconst db = flow.get('ctxDb') || {};\nconst fmt = (o) => (ms) => ms ? new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: tz, hour12: true }, o)).format(new Date(ms)).replace(/\\u202f/g, ' ') : null;\nconst t12 = fmt({ month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });\nconst hm = fmt({ hour: 'numeric', minute: '2-digit' });\nconst clk = (m) => (Math.floor(m / 60) % 12 || 12) + ':' + String(m % 60).padStart(2, '0') + ' ' + (m < 720 ? 'AM' : 'PM');\nconst r1 = (v) => Number.isFinite(Number(v)) && v !== null ? Math.round(Number(v) * 10) / 10 : null;\nconst ageMin = (ms) => ms ? Math.round((now - ms) / 60000) : null;\nlet states = {};\ntry { states = global.get('homeassistant').homeAssistant.states || {}; } catch (e) {}\nconst st = (id) => (states[id] || {}).state;\nconst ids = { tds: 'sensor.esp32_motor_tds_sensor_ppm', flow: 'sensor.esp32_motor_water_flow_rate', tank: 'sensor.esp32_tank_water_level', runtime: 'sensor.water_motor_pump_runtime_today', valve: 'switch.esp32_motor_drain_valve_switch', pump: 'switch.water_motor_pump', manual: 'input_boolean.water_manual_control' };\nconst tc = global.get('timeCtx');\nconst tcFresh = Boolean(tc && now - tc.at < 180000);\nconst ls = s.lastSeen || {};\nconst tankAge = ageMin(ls.tank);\nconst trusted = Number.isFinite(s.tank) && Number.isFinite(s.tankRaw) && Math.abs(s.tank - s.tankRaw) <= 15 && tankAge !== null && tankAge <= 20;\nconst evSum = (e) => e ? {\n  id: e.id, kind: e.kind, grade: e.grade || null, mode: e.mode || null, opened: t12(e.openedAt), first_flow: hm(e.firstFlowAt), closed: t12(e.closedAt), reason: e.reason || null,\n  tank_start: r1(e.tankStart), tank_max: r1(e.tankMax), tank_end: r1(e.tankEnd), pump_runs: e.runs || 0, pump_min: e.runMs ? Math.round(e.runMs / 60000) : 0,\n  tds_min: r1(e.tdsMin), tds_max: r1(e.tdsMax), failed_fills: e.failedFills || 0, drain_tests: e.drains || 0, manual_min: e.manualMs ? Math.round(e.manualMs / 60000) : 0,\n  successful_at: hm(e.successAt), completed_at: hm(e.completedAt), supply_min: e.supplyMin || null\n} : null;\nconst SD = (global.get('supplyDays') || {}).days || {};\nconst supplyDays = Object.keys(SD).sort().reverse().slice(0, 7).map((k) => { const x = SD[k]; return { id: x.date, day: x.day, first_flow: x.water_first_seen, closed: x.supply_closed, pump_from: x.pump_from, pump_to: x.pump_to, pump_min: x.pump_min, pump_total: x.pump_total, breaks_min: x.breaks_min, tank_12pm_to_6pm: x.tank_12pm_6pm, tds_ppm: x.tds_ppm, failed_fills: x.failed_fills, drain_tests: x.drain_tests, outcome: x.outcome, summary: x.text }; });\nconst recentDays = (db.days || []).map((d) => { const x = SD[d.date]; if (!x) return d; const o = Object.assign({}, d); delete o.fills_ok; delete o.fills_failed; o.outcome = x.outcome; o.pump_min = x.pump_min; return o; });\nconst run = s.run || null;\nconst health = {};\nObject.entries(ids).forEach(([k, id]) => { const v = st(id); if (v === undefined || v === 'unavailable' || v === 'unknown') health[k] = v === undefined ? 'missing' : v; });\nlet fc = null;\ntry { const wf = global.get('waterForecast'); fc = wf ? JSON.stringify(wf).slice(0, 700) : null; } catch (e) {}\nconst ww = global.get('waterWeek');\nconst data = {\n  built_at: t12(now),\n  notes: 'There is one supply event per day. recent_events is the daily supply record, one row per day (water first seen, when it closed, pump from and to, total pump time, breaks, tank level 12 PM to 6 PM, outcome): use it for any per-day question and quote its summary. The SQL events table can hold several rows for one day (older days were split): for per-day answers from SQL, group by IST date.',\n  now: { text: tcFresh ? tc.text : t12(now), date: s.date || null, day_type: s.day || null, today: tcFresh ? (tc.todayLine || null) : null, next: tcFresh ? (tc.nextLine || null) : null },\n  settings: { probe_window: clk(P.windowStartMin) + ' - ' + clk(P.windowEndMin), no_supply_day_probes: 'every 30 min, 12:00 PM - 4:00 PM', wait_after_first_flow_min: 33, tds_range_ppm: [Number(P.tdsMin) || 100, Number(P.tdsMax) || 240], successful_fill_pct: 80, completed_fill_pct: 95, learned_supply_window: P.suggestedStartMin ? clk(P.suggestedStartMin) + ' - ' + clk(P.suggestedEndMin) : null },\n  controller: {\n    phase: s.phase || null, sub: s.sub || null, manual_mode: Boolean(s.manual) || st(ids.manual) === 'on',\n    pump: st(ids.pump) || s.pump || null, valve: st(ids.valve) || s.valve || null,\n    pump_run_started: run && run.startedAt ? hm(run.startedAt) : null, run_tds_accepted: run ? Boolean(run.accepted) : null,\n    next_probe: s.nextAt && s.nextAt > now ? hm(s.nextAt) : null, done_for_today: Boolean(s.done), paused: Boolean(s.pause),\n    last_stop: s.stopCause ? { at: t12(s.stopCause.at), category: s.stopCause.category || null, reason: s.stopCause.reason || null } : null,\n    last_drain_test: s.drain && s.drain.result ? { at: hm(s.drain.startedAt), trend: s.drain.result.cls, tds_from: r1(s.drain.result.from), tds_to: r1(s.drain.result.to) } : null\n  },\n  live: { tank_filtered_pct: r1(s.tank), tank_raw_pct: r1(s.tankRaw), tank_sensor_trusted: trusted, flow_lpm: r1(s.flow), tds_ppm: r1(s.tds), pump_runtime_today_h: r1(s.runtime), reading_age_min: { tank: tankAge, flow: ageMin(ls.flow), tds: ageMin(ls.tds) } },\n  health: { unavailable: health, ai_enabled: st('input_boolean.water_ai_enabled') !== 'off' },\n  open_event: evSum(s.ev),\n  recent_events: supplyDays,\n  today_timeline: (db.timeline || []).slice().reverse().map((r) => ({ at: hm(r.ts), topic: r.topic, text: String(r.text || '').slice(0, 160) })),\n  today_series_15min: (db.series || []).map((r) => ({ t: hm(r.t), tank: r.tank, flow: r.flow, tds: r.tds, w: r.w, pump: r.pump })),\n  recent_days: recentDays,\n  forecast_now: fc,\n  forecast_week: ww && ww.weekText && now - (ww.at || 0) < 7200000 ? { next: ww.nextText, days: ww.weekText } : null,\n  forecast_history: (db.forecasts || []).map((r) => ({ at: t12(r.ts), kind: r.kind, day: r.day, p: r.p, confidence: r.confidence, reason: String(r.reason || '').slice(0, 120), outcome: r.outcome, correct: r.correct })),\n  open_anomalies: [],\n  db_age_min: ageMin(db.at)\n};\nconst size = JSON.stringify(data).length;\nglobal.set('aiCtx', { at: now, size, data });\nnode.status({ fill: 'green', shape: 'dot', text: (s.phase || '?') + ' | ' + Math.round(size / 1000) + 'k chars' });\nreturn null;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -2509,11 +2484,11 @@
     "finalize": "",
     "libs": [],
     "x": 480,
-    "y": 120,
+    "y": 3380,
     "wires": [
       []
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-in",
@@ -2521,13 +2496,13 @@
     "name": "ai-ctx",
     "links": [],
     "x": 75,
-    "y": 180,
+    "y": 3440,
     "wires": [
       [
         "ctx-get"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-get",
@@ -2541,13 +2516,13 @@
     "finalize": "",
     "libs": [],
     "x": 290,
-    "y": 180,
+    "y": 3440,
     "wires": [
       [
         "ctx-out"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ctx-out",
@@ -2556,9 +2531,9 @@
     "mode": "return",
     "links": [],
     "x": 495,
-    "y": 180,
+    "y": 3440,
     "wires": [],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tl-ddl-tick",
@@ -2577,13 +2552,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 220,
-    "y": 260,
+    "y": 3520,
     "wires": [
       [
         "tl-ddl"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tl-ddl",
@@ -2597,13 +2572,13 @@
     "finalize": "",
     "libs": [],
     "x": 510,
-    "y": 260,
+    "y": 3520,
     "wires": [
       [
         "tl-db-rw"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tl-db-rw",
@@ -2613,11 +2588,11 @@
     "sqlquery": "batch",
     "sql": "",
     "x": 760,
-    "y": 260,
+    "y": 3520,
     "wires": [
       []
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tools-in",
@@ -2625,13 +2600,13 @@
     "name": "ai-tools",
     "links": [],
     "x": 75,
-    "y": 360,
+    "y": 3620,
     "wires": [
       [
         "tools-dispatch"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tools-dispatch",
@@ -2645,7 +2620,7 @@
     "finalize": "",
     "libs": [],
     "x": 320,
-    "y": 360,
+    "y": 3620,
     "wires": [
       [
         "tools-sql"
@@ -2657,7 +2632,7 @@
         "tl-db-log"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tools-sql",
@@ -2667,13 +2642,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 580,
-    "y": 340,
+    "y": 3600,
     "wires": [
       [
         "tools-fmt"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tools-catch",
@@ -2684,13 +2659,13 @@
     ],
     "uncaught": false,
     "x": 570,
-    "y": 400,
+    "y": 3660,
     "wires": [
       [
         "tools-fmt"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tools-fmt",
@@ -2704,7 +2679,7 @@
     "finalize": "",
     "libs": [],
     "x": 820,
-    "y": 360,
+    "y": 3620,
     "wires": [
       [
         "tools-out"
@@ -2713,7 +2688,7 @@
         "tl-db-log"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tl-db-log",
@@ -2723,11 +2698,11 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 1080,
-    "y": 400,
+    "y": 3660,
     "wires": [
       []
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "tools-out",
@@ -2736,9 +2711,9 @@
     "mode": "return",
     "links": [],
     "x": 1075,
-    "y": 340,
+    "y": 3600,
     "wires": [],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ag-in",
@@ -2746,13 +2721,13 @@
     "name": "ai-agent",
     "links": [],
     "x": 75,
-    "y": 520,
+    "y": 3780,
     "wires": [
       [
         "ag-step"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ag-step",
@@ -2766,7 +2741,7 @@
     "finalize": "",
     "libs": [],
     "x": 330,
-    "y": 520,
+    "y": 3780,
     "wires": [
       [
         "ag-call-llm"
@@ -2778,7 +2753,7 @@
         "ag-out"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ag-call-llm",
@@ -2790,13 +2765,13 @@
     "linkType": "static",
     "timeout": "200",
     "x": 600,
-    "y": 500,
+    "y": 3760,
     "wires": [
       [
         "ag-step"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ag-call-tool",
@@ -2808,13 +2783,13 @@
     "linkType": "static",
     "timeout": "30",
     "x": 600,
-    "y": 560,
+    "y": 3820,
     "wires": [
       [
         "ag-step"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ag-out",
@@ -2823,9 +2798,9 @@
     "mode": "return",
     "links": [],
     "x": 835,
-    "y": 520,
+    "y": 3780,
     "wires": [],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "agt-tick",
@@ -2844,13 +2819,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 200,
-    "y": 660,
+    "y": 3920,
     "wires": [
       [
         "agt-q"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "agt-q",
@@ -2864,13 +2839,13 @@
     "finalize": "",
     "libs": [],
     "x": 440,
-    "y": 660,
+    "y": 3920,
     "wires": [
       [
         "agt-rate"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "agt-rate",
@@ -2889,13 +2864,13 @@
     "allowrate": false,
     "outputs": 1,
     "x": 620,
-    "y": 660,
+    "y": 3920,
     "wires": [
       [
         "agt-call"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "agt-call",
@@ -2907,13 +2882,13 @@
     "linkType": "static",
     "timeout": "300",
     "x": 790,
-    "y": 660,
+    "y": 3920,
     "wires": [
       [
         "agt-store"
       ]
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "agt-store",
@@ -2927,18 +2902,18 @@
     "finalize": "",
     "libs": [],
     "x": 980,
-    "y": 660,
+    "y": 3920,
     "wires": [
       []
     ],
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "id": "ai-db-ro",
     "type": "sqlitedb",
     "db": "/config/node-red/water.db",
     "mode": "RO",
-    "z": "b85f5d7c0944bfd3"
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -2979,12 +2954,6 @@
     "z": "wu-tab"
   },
   {
-    "type": "tab",
-    "label": "Water AI Forecast (shadow)",
-    "id": "188a8bac985e662c",
-    "info": "Phase 5 of the Water System AI Upgrade. Shadow analyst forecaster: receives a copy of every forecast request from the current forecaster (wu-pred-build -> wu-pred-tee), runs the ai-agent with SQL tools, checks the result against the counted baseline, stores it in ai_forecasts. Never shown on the dashboard and never affects control. Nightly scoring (12:20 AM) and a 14-day comparison vs the current forecaster (12:25 AM, global aiForecastScore). Switch over only after 7+ days of comparison and owner approval."
-  },
-  {
     "id": "fc-in",
     "type": "link in",
     "name": "forecast shadow in",
@@ -2992,13 +2961,13 @@
       "wu-pred-shadow-out"
     ],
     "x": 95,
-    "y": 80,
+    "y": 4520,
     "wires": [
       [
         "fc-req"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-req",
@@ -3012,13 +2981,13 @@
     "finalize": "",
     "libs": [],
     "x": 300,
-    "y": 80,
+    "y": 4520,
     "wires": [
       [
         "fc-agent"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-agent",
@@ -3030,13 +2999,13 @@
     "linkType": "static",
     "timeout": "300",
     "x": 500,
-    "y": 80,
+    "y": 4520,
     "wires": [
       [
         "fc-parse"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-catch",
@@ -3047,13 +3016,13 @@
     ],
     "uncaught": false,
     "x": 500,
-    "y": 140,
+    "y": 4580,
     "wires": [
       [
         "fc-parse"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-parse",
@@ -3067,13 +3036,13 @@
     "finalize": "",
     "libs": [],
     "x": 740,
-    "y": 80,
+    "y": 4520,
     "wires": [
       [
         "fc-db"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-db",
@@ -3083,11 +3052,11 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 980,
-    "y": 80,
+    "y": 4520,
     "wires": [
       []
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-ddl-tick",
@@ -3106,13 +3075,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 180,
-    "y": 220,
+    "y": 4660,
     "wires": [
       [
         "fc-ddl"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-ddl",
@@ -3126,13 +3095,13 @@
     "finalize": "",
     "libs": [],
     "x": 420,
-    "y": 220,
+    "y": 4660,
     "wires": [
       [
         "fc-db-batch"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-score-tick",
@@ -3151,13 +3120,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 190,
-    "y": 280,
+    "y": 4720,
     "wires": [
       [
         "fc-score"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-score",
@@ -3171,13 +3140,13 @@
     "finalize": "",
     "libs": [],
     "x": 480,
-    "y": 280,
+    "y": 4720,
     "wires": [
       [
         "fc-db-batch"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-db-batch",
@@ -3187,11 +3156,11 @@
     "sqlquery": "batch",
     "sql": "",
     "x": 760,
-    "y": 250,
+    "y": 4690,
     "wires": [
       []
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-cmp-tick",
@@ -3210,13 +3179,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 220,
-    "y": 340,
+    "y": 4780,
     "wires": [
       [
         "fc-cmp"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-cmp",
@@ -3230,13 +3199,13 @@
     "finalize": "",
     "libs": [],
     "x": 500,
-    "y": 340,
+    "y": 4780,
     "wires": [
       [
         "fc-cmp-sql"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-cmp-sql",
@@ -3246,13 +3215,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 720,
-    "y": 340,
+    "y": 4780,
     "wires": [
       [
         "fc-cmp-store"
       ]
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "id": "fc-cmp-store",
@@ -3266,11 +3235,11 @@
     "finalize": "",
     "libs": [],
     "x": 930,
-    "y": 340,
+    "y": 4780,
     "wires": [
       []
     ],
-    "z": "188a8bac985e662c"
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -3306,12 +3275,6 @@
     "z": "wu-tab"
   },
   {
-    "type": "tab",
-    "label": "Water AI Anomalies & Digests",
-    "id": "a153e5ec68e13b8a",
-    "info": "Phase 6 of the Water System AI Upgrade. Code detectors every 60 s (SQL snapshot every 5 min) open candidates in ai_anomalies; the analyst (ai-agent) reviews each new one (JSON: real, severity, explanation) and can only raise severity above the code floor. Critical kinds (valve stuck open, dry run) alert owner + family group at once. Auto-close after 24 h clear (1 h for critical). Daily digest 6:15 PM and weekly review Sunday 8 PM to the owner chat. Advisory only: nothing here can switch the pump, valve or settings."
-  },
-  {
     "id": "an-ddl-tick",
     "type": "inject",
     "name": "On start: ai_anomalies table",
@@ -3328,13 +3291,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 170,
-    "y": 40,
+    "y": 5160,
     "wires": [
       [
         "an-ddl"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-ddl",
@@ -3348,13 +3311,13 @@
     "finalize": "",
     "libs": [],
     "x": 390,
-    "y": 40,
+    "y": 5160,
     "wires": [
       [
         "an-db-batch"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-db-batch",
@@ -3364,11 +3327,11 @@
     "sqlquery": "batch",
     "sql": "",
     "x": 600,
-    "y": 40,
+    "y": 5160,
     "wires": [
       []
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-load-tick",
@@ -3391,13 +3354,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 180,
-    "y": 100,
+    "y": 5220,
     "wires": [
       [
         "an-load-sql"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-load-sql",
@@ -3407,13 +3370,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 400,
-    "y": 100,
+    "y": 5220,
     "wires": [
       [
         "an-load-fn"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-load-fn",
@@ -3427,11 +3390,11 @@
     "finalize": "",
     "libs": [],
     "x": 620,
-    "y": 100,
+    "y": 5220,
     "wires": [
       []
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-tick",
@@ -3450,13 +3413,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 170,
-    "y": 180,
+    "y": 5300,
     "wires": [
       [
         "an-q"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-q",
@@ -3470,7 +3433,7 @@
     "finalize": "",
     "libs": [],
     "x": 420,
-    "y": 180,
+    "y": 5300,
     "wires": [
       [
         "an-sql"
@@ -3479,7 +3442,7 @@
         "an-detect"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-sql",
@@ -3489,13 +3452,13 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 640,
-    "y": 160,
+    "y": 5280,
     "wires": [
       [
         "an-detect"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-detect",
@@ -3509,7 +3472,7 @@
     "finalize": "",
     "libs": [],
     "x": 860,
-    "y": 180,
+    "y": 5300,
     "wires": [
       [
         "an-call"
@@ -3521,7 +3484,7 @@
         "fmt-an"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-call",
@@ -3533,13 +3496,13 @@
     "linkType": "static",
     "timeout": "300",
     "x": 1100,
-    "y": 140,
+    "y": 5260,
     "wires": [
       [
         "an-review"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-catch",
@@ -3550,13 +3513,13 @@
     ],
     "uncaught": false,
     "x": 1100,
-    "y": 100,
+    "y": 5220,
     "wires": [
       [
         "an-review"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-review",
@@ -3570,7 +3533,7 @@
     "finalize": "",
     "libs": [],
     "x": 1320,
-    "y": 140,
+    "y": 5260,
     "wires": [
       [
         "an-db"
@@ -3579,7 +3542,7 @@
         "fmt-an"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-db",
@@ -3589,11 +3552,11 @@
     "sqlquery": "msg.topic",
     "sql": "",
     "x": 1560,
-    "y": 200,
+    "y": 5320,
     "wires": [
       []
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "an-tg",
@@ -3603,11 +3566,11 @@
     "haserroroutput": false,
     "outputs": 1,
     "x": 1580,
-    "y": 260,
+    "y": 5380,
     "wires": [
       []
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "dg-tick",
@@ -3630,13 +3593,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 360,
+    "y": 5480,
     "wires": [
       [
         "dg-req"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "wk-tick",
@@ -3659,13 +3622,13 @@
     "payload": "",
     "payloadType": "date",
     "x": 170,
-    "y": 420,
+    "y": 5540,
     "wires": [
       [
         "dg-req"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "dg-req",
@@ -3679,13 +3642,13 @@
     "finalize": "",
     "libs": [],
     "x": 420,
-    "y": 390,
+    "y": 5510,
     "wires": [
       [
         "dg-call"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "dg-call",
@@ -3697,13 +3660,13 @@
     "linkType": "static",
     "timeout": "300",
     "x": 640,
-    "y": 390,
+    "y": 5510,
     "wires": [
       [
         "dg-send"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "dg-catch",
@@ -3714,13 +3677,13 @@
     ],
     "uncaught": false,
     "x": 640,
-    "y": 450,
+    "y": 5570,
     "wires": [
       [
         "dg-send"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
+    "z": "wu-tab"
   },
   {
     "id": "dg-send",
@@ -3734,19 +3697,13 @@
     "finalize": "",
     "libs": [],
     "x": 860,
-    "y": 390,
+    "y": 5510,
     "wires": [
       [
         "fmt-an"
       ]
     ],
-    "z": "a153e5ec68e13b8a"
-  },
-  {
-    "type": "tab",
-    "label": "Water Telegram Chat",
-    "id": "wt-tab",
-    "info": "Rebuilt 2 Nov 2026. Owner 123456789 (all commands, settings via /yes), family group -1001234567890 (/status, /insights, chat by mention or reply). Group members who have posted in the group may also use the bot privately. Live updates arrive from the Lean tab via wl-link-tg -> wt-notify-in."
+    "z": "wu-tab"
   },
   {
     "bot": "wt-bot",
@@ -3762,8 +3719,8 @@
       []
     ],
     "x": 150,
-    "y": 100,
-    "z": "wt-tab"
+    "y": 2240,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -3788,8 +3745,8 @@
       ]
     ],
     "x": 390,
-    "y": 100,
-    "z": "wt-tab"
+    "y": 2240,
+    "z": "wu-tab"
   },
   {
     "id": "wt-agent-call",
@@ -3806,8 +3763,8 @@
       ]
     ],
     "x": 640,
-    "y": 140,
-    "z": "wt-tab"
+    "y": 2280,
+    "z": "wu-tab"
   },
   {
     "id": "wt-agent-catch",
@@ -3823,8 +3780,8 @@
       ]
     ],
     "x": 640,
-    "y": 190,
-    "z": "wt-tab"
+    "y": 2330,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -3843,8 +3800,8 @@
       ]
     ],
     "x": 880,
-    "y": 140,
-    "z": "wt-tab"
+    "y": 2280,
+    "z": "wu-tab"
   },
   {
     "id": "wt-writer-call",
@@ -3861,8 +3818,8 @@
       ]
     ],
     "x": 650,
-    "y": 250,
-    "z": "wt-tab"
+    "y": 2390,
+    "z": "wu-tab"
   },
   {
     "id": "wt-writer-catch",
@@ -3878,8 +3835,8 @@
       ]
     ],
     "x": 650,
-    "y": 300,
-    "z": "wt-tab"
+    "y": 2440,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -3898,8 +3855,8 @@
       ]
     ],
     "x": 900,
-    "y": 250,
-    "z": "wt-tab"
+    "y": 2390,
+    "z": "wu-tab"
   },
   {
     "id": "wt-notify-in",
@@ -3915,8 +3872,8 @@
       ]
     ],
     "x": 140,
-    "y": 380,
-    "z": "wt-tab"
+    "y": 2520,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -3935,8 +3892,8 @@
       ]
     ],
     "x": 400,
-    "y": 380,
-    "z": "wt-tab"
+    "y": 2520,
+    "z": "wu-tab"
   },
   {
     "bot": "wt-bot",
@@ -3952,8 +3909,8 @@
       ]
     ],
     "x": 1130,
-    "y": 200,
-    "z": "wt-tab"
+    "y": 2340,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -3970,8 +3927,8 @@
       []
     ],
     "x": 1330,
-    "y": 220,
-    "z": "wt-tab"
+    "y": 2360,
+    "z": "wu-tab"
   },
   {
     "crontab": "",
@@ -3995,8 +3952,8 @@
       ]
     ],
     "x": 190,
-    "y": 520,
-    "z": "188a8bac985e662c"
+    "y": 4960,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -4015,8 +3972,8 @@
       ]
     ],
     "x": 420,
-    "y": 520,
-    "z": "188a8bac985e662c"
+    "y": 4960,
+    "z": "wu-tab"
   },
   {
     "id": "fw-sql",
@@ -4031,8 +3988,8 @@
       ]
     ],
     "x": 620,
-    "y": 520,
-    "z": "188a8bac985e662c"
+    "y": 4960,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -4049,8 +4006,8 @@
       []
     ],
     "x": 840,
-    "y": 520,
-    "z": "188a8bac985e662c"
+    "y": 4960,
+    "z": "wu-tab"
   },
   {
     "crontab": "",
@@ -4079,7 +4036,7 @@
   },
   {
     "finalize": "",
-    "func": "const s=flow.get('waterSupplyState');if(!s||!(s.events||[]).length)return null;\nconst e=s.events[s.events.length-1];const now=Date.now();\nconst dOf=(ms)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata'}).format(new Date(ms));\nconst day=dOf(e.openedAt);\nconst t12=Date.parse(day+'T12:00:00+05:30'),t18=Date.parse(day+'T18:00:00+05:30');\nconst p=global.get('prevEventText');if(p&&p.id===e.id&&p.final&&p.v===8)return null;\n// v7: whole supply day, from the first same-day event (older split events included). v8: Xh MMm durations.\nconst same=s.events.filter(x=>dOf(x.openedAt)===day);\nconst o=Math.min(...same.map(x=>Math.min(x.openedAt,x.firstFlowAt||x.openedAt)))-120000,c=(e.closedAt||now)+60000;\nconst tw=`FROM readings WHERE tank IS NOT NULL AND tank>0 AND ts BETWEEN ${t12} AND ${t18}`;\nmsg.topic=`SELECT 'run' AS k, started_at AS a, ended_at AS b, NULL AS v FROM pump_runs WHERE started_at BETWEEN ${o} AND ${c} UNION ALL SELECT 'tmin' AS k, NULL AS a, NULL AS b, MIN(tank) AS v ${tw} UNION ALL SELECT 'tmax' AS k, NULL AS a, NULL AS b, MAX(tank) AS v ${tw} UNION ALL SELECT 'r' AS k, ts AS a, pump AS b, pump_w AS v FROM (SELECT ts,pump,pump_w FROM readings WHERE ts BETWEEN ${o} AND ${c} ORDER BY ts)`;\nmsg.ev={id:e.id,runMs:e.runMs,day,final:Boolean(e.closedAt)&&now>t18+1800000};\nreturn msg;",
+    "func": "// v11 (7 Nov 2026): one daily supply record for every reader (dashboard Previous card, bot context, summaries), stored in global supplyDays.\n// Recomputes the last 10 supply days that are not final yet (a day is final 30 min after 6 PM once all its events closed).\nconst s=flow.get('waterSupplyState');if(!s)return null;\nconst now=Date.now();\nconst dOf=(ms)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata'}).format(new Date(ms));\nconst evs=(s.events||[]).concat(s.ev?[s.ev]:[]);\nif(!evs.length)return null;\nconst byDay={};for(const e of evs){const d=dOf(e.openedAt);(byDay[d]=byDay[d]||[]).push(e);}\nconst days=Object.keys(byDay).sort().slice(-10);\nconst SD=global.get('supplyDays')||{};const have=(SD.v===11&&SD.days)?SD.days:{};\nconst need=days.filter((d)=>!(have[d]&&have[d].final));\nif(!need.length)return null;\nconst parts=[],meta=[];\nfor(const d of need){\n  const es=byDay[d];\n  const t12=Date.parse(d+'T12:00:00+05:30'),t18=Date.parse(d+'T18:00:00+05:30');\n  const open=es.some((e)=>!e.closedAt);\n  const o=Math.min(...es.map((x)=>Math.min(x.openedAt,x.firstFlowAt||x.openedAt)))-120000;\n  const c=(open?now:Math.max(...es.map((x)=>x.closedAt)))+60000;\n  const q=`'${d}'`;\n  parts.push(`SELECT 'run' AS k, ${q} AS d, started_at AS a, ended_at AS b, NULL AS v FROM pump_runs WHERE started_at BETWEEN ${o} AND ${c}`);\n  parts.push(`SELECT 'tmin' AS k, ${q} AS d, NULL AS a, NULL AS b, MIN(tank) AS v FROM readings WHERE tank IS NOT NULL AND tank>0 AND ts BETWEEN ${t12} AND ${t18}`);\n  parts.push(`SELECT 'tmax' AS k, ${q} AS d, NULL AS a, NULL AS b, MAX(tank) AS v FROM readings WHERE tank IS NOT NULL AND tank>0 AND ts BETWEEN ${t12} AND ${t18}`);\n  parts.push(`SELECT 'r' AS k, ${q} AS d, ts AS a, pump AS b, pump_w AS v FROM readings WHERE ts BETWEEN ${o} AND ${c}`);\n  meta.push({day:d,open,final:!open&&now>t18+1800000,o,c});\n}\nmsg.topic=parts.join(' UNION ALL ');\nmsg.days=meta;\nreturn msg;",
     "id": "wu-prev-q",
     "initialize": "",
     "libs": [],
@@ -4115,7 +4072,7 @@
   },
   {
     "finalize": "",
-    "func": "const ev=msg.ev;if(!ev)return null;const rows=Array.isArray(msg.payload)?msg.payload:[];\nconst h=(ms)=>new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(ms)).replace(/\\u202f/g,' ');\n// Runs = recorded pump_runs plus runs seen in the minute readings (manual runs are not in pump_runs).\nconst runs=rows.filter(r=>r.k==='run'&&r.a).map(r=>[Number(r.a),Number(r.b||r.a)]);\nlet st=null,ls=null;for(const r of rows.filter(x=>x.k==='r')){const t=Number(r.a);const on=Number(r.b)===1||Number(r.v)>100;if(on){if(st===null)st=t;ls=t;}else if(st!==null){runs.push([st,Math.min(t,ls+60000)]);st=null;}}if(st!==null)runs.push([st,ls+60000]);\nruns.sort((x,y)=>x[0]-y[0]);\nconst m=[];for(const r of runs){const q=m[m.length-1];if(q&&r[0]-q[1]<120000)q[1]=Math.max(q[1],r[1]);else m.push([r[0],r[1]]);}\n// Pumped time counts every run; breaks and from/to use only real runs (>=90 s), so TDS pulses do not split a break.\nconst tot=Math.round(m.reduce((a,r)=>a+(r[1]-r[0]),0)/60000);\nconst rr=m.filter(r=>r[1]-r[0]>=90000);const R=rr.length?rr:m;\nconst dur=(n)=>n>=60?Math.floor(n/60)+'h '+String(n%60).padStart(2,'0')+'m':n+'m';\nconst D=(n)=>n>59?dur(n):n+(n===1?' min':' mins');\nconst br=[];for(let i=1;i<R.length;i++)br.push(Math.round((R[i][0]-R[i-1][1])/60000));\nconst lst=(a)=>a.length<2?String(a[0]):a.slice(0,-1).join(', ')+' and '+a[a.length-1];\nconst brTxt=!br.length?'no breaks':br.length+(br.length===1?' break, ':' breaks, ')+lst(br.map(D))+' long';\nconst tv=(k)=>{const r=rows.find(x=>x.k===k);return r&&r.v!==null&&Number.isFinite(Number(r.v))?Math.round(Number(r.v)):null;};\nconst lo=tv('tmin'),hi=tv('tmax');\nconst tank='Tank level '+(lo===null||hi===null?'n/a':lo+'% to '+hi+'%');\nconst p0=new Intl.DateTimeFormat('en-GB',{timeZone:'UTC',weekday:'short',day:'numeric',month:'short'}).formatToParts(new Date(ev.day+'T12:00:00Z'));const pg=(t)=>(p0.find(x=>x.type===t)||{}).value;\nconst lab=pg('weekday')+' '+pg('day')+' '+pg('month')+': ';\nlet text=lab+(R.length?'Pump ran for '+dur(tot)+' from '+h(R[0][0])+' to '+h(R[R.length-1][1])+' with '+brTxt+'. '+tank+'.':'Pump did not run. '+tank+'.');\nif(text.length>255&&br.length)text=lab+'Pump ran for '+dur(tot)+' from '+h(R[0][0])+' to '+h(R[R.length-1][1])+' with '+br.length+' breaks ('+dur(br.reduce((a,b)=>a+b,0))+' total). '+tank+'.';\ntext=text.slice(0,255);\nglobal.set('prevEventText',{id:ev.id,v:8,text,final:ev.final,at:Date.now(),runs:m.length,rows:rows.length});\n// Push straight to HA when it differs from the helper's current value (the dashboard function only runs on controller changes).\nconst cur=(global.get('homeassistant')||{}).homeAssistant;const hs=cur&&cur.states&&cur.states['input_text.water_last_event'];\nif(hs&&hs.state===text)return null;\nreturn {payload:{action:'input_text.set_value',target:{entity_id:'input_text.water_last_event'},data:{value:text}}};",
+    "func": "// v11 (7 Nov 2026): builds the one daily supply record (global supplyDays) read by the dashboard Previous card, the bot context and summaries.\n// Pump runs come from the minute readings (pump on/off, watts); pump_runs records are used only for a day with no readings (some have broken end times).\nconst meta=msg.days;if(!Array.isArray(meta))return null;\nconst rows=Array.isArray(msg.payload)?msg.payload:[];\nconst s=flow.get('waterSupplyState')||{};\nconst now=Date.now();\nconst dOf=(ms)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata'}).format(new Date(ms));\nconst h=(ms)=>new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Kolkata',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(ms)).replace(/\\u202f/g,' ');\nconst dur=(n)=>n>=60?Math.floor(n/60)+'h '+String(n%60).padStart(2,'0')+'m':n+'m';\nconst D=(n)=>n>59?dur(n):n+(n===1?' min':' mins');\nconst lst=(a)=>a.length<2?String(a[0]):a.slice(0,-1).join(', ')+' and '+a[a.length-1];\nconst num=(v)=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))?Number(v):null;\nconst SD=global.get('supplyDays')||{};const all=(SD.v===11&&SD.days)?SD.days:{};\nconst evs=(s.events||[]).concat(s.ev?[s.ev]:[]);\nfor(const md of meta){\n  const day=md.day;const R0=rows.filter((r)=>r.d===day);\n  const o=Number(md.o)||0,c=Number(md.c)||now;\n  const rd=R0.filter((x)=>x.k==='r').sort((x,y)=>Number(x.a)-Number(y.a));\n  const runs=[];\n  let st=null,ls=null;\n  for(const r of rd){const t=Number(r.a);const on=Number(r.b)===1||Number(r.v)>100;if(on){if(st===null)st=t;ls=t;}else if(st!==null){runs.push([st,Math.min(t,ls+60000)]);st=null;}}\n  if(st!==null)runs.push([st,Math.min(ls+60000,c)]);\n  if(!rd.length)for(const r of R0.filter((x)=>x.k==='run'&&x.a)){const a=Math.max(Number(r.a),o);const b=Math.min(Number(r.b)||a,c,a+7800000);if(b>a)runs.push([a,b]);}\n  runs.sort((x,y)=>x[0]-y[0]);\n  const m=[];for(const r of runs){const q=m[m.length-1];if(q&&r[0]-q[1]<120000)q[1]=Math.max(q[1],r[1]);else m.push([r[0],r[1]]);}\n  // Pumped time counts every run; breaks and from/to use only real runs (>=90 s), so TDS pulses do not split a break.\n  const tot=Math.round(m.reduce((a,r)=>a+(r[1]-r[0]),0)/60000);\n  const rr=m.filter((r)=>r[1]-r[0]>=90000);const R=rr.length?rr:m;\n  const br=[];for(let i=1;i<R.length;i++)br.push(Math.round((R[i][0]-R[i-1][1])/60000));\n  const brTxt=!br.length?'no breaks':br.length+(br.length===1?' break, ':' breaks, ')+lst(br.map(D))+' long';\n  const tv=(k)=>{const r=R0.find((x)=>x.k===k);return r&&num(r.v)!==null?Math.round(Number(r.v)):null;};\n  const lo=tv('tmin'),hi=tv('tmax');\n  const tank='Tank level '+(lo===null||hi===null?'n/a':lo+'% to '+hi+'%');\n  const p0=new Intl.DateTimeFormat('en-GB',{timeZone:'UTC',weekday:'short',day:'numeric',month:'short'}).formatToParts(new Date(day+'T12:00:00Z'));const pg=(t)=>(p0.find((x)=>x.type===t)||{}).value;\n  const label=pg('weekday')+' '+pg('day')+' '+pg('month');\n  let text=label+': '+(R.length?'Pump ran for '+dur(tot)+' from '+h(R[0][0])+' to '+h(R[R.length-1][1])+' with '+brTxt+'. '+tank+'.':'Pump did not run. '+tank+'.');\n  if(text.length>255&&br.length)text=label+': Pump ran for '+dur(tot)+' from '+h(R[0][0])+' to '+h(R[R.length-1][1])+' with '+br.length+' breaks ('+dur(br.reduce((a,b)=>a+b,0))+' total). '+tank+'.';\n  text=text.slice(0,255);\n  const es=evs.filter((e)=>dOf(e.openedAt)===day);\n  const first=es.length?Math.min(...es.map((e)=>e.firstFlowAt||e.openedAt)):null;\n  const allClosed=es.length>0&&es.every((e)=>e.closedAt);\n  const lastClose=allClosed?Math.max(...es.map((e)=>e.closedAt)):null;\n  const tmin=es.map((e)=>num(e.tdsMin)).filter((x)=>x!==null),tmax=es.map((e)=>num(e.tdsMax)).filter((x)=>x!==null);\n  const outcome=es.some((e)=>e.completedAt)?'completed fill (tank reached 95%)':(es.some((e)=>e.successAt)?'successful fill (tank reached 80%)':(R.length?'filled, but the tank did not reach 80%':(es.length?'water came, pump did not run':'no supply')));\n  all[day]={date:day,day:label,final:Boolean(md.final),open:Boolean(md.open),water_first_seen:first?h(first):null,supply_closed:lastClose?h(lastClose):(md.open?'still open':null),pump_from:R.length?h(R[0][0]):null,pump_to:R.length?h(R[R.length-1][1]):null,pump_min:tot,pump_total:dur(tot),breaks_min:br,tank_12pm_6pm:lo===null||hi===null?null:lo+'% to '+hi+'%',tds_ppm:tmin.length&&tmax.length?Math.round(Math.min(...tmin))+'-'+Math.round(Math.max(...tmax)):null,failed_fills:es.reduce((a,e)=>a+(e.failedFills||0),0),drain_tests:es.reduce((a,e)=>a+(e.drains||0),0),outcome,text};\n}\nconst keys=Object.keys(all).sort();while(keys.length>14)delete all[keys.shift()];\nglobal.set('supplyDays',{v:11,at:now,days:all});\n// Previous card: the latest closed supply day.\nconst lc=(s.events||[]).slice(-1)[0];if(!lc)return null;\nconst cd=all[dOf(lc.openedAt)];if(!cd)return null;\nglobal.set('prevEventText',{id:lc.id,v:11,text:cd.text,final:cd.final,at:now});\nconst cur=(global.get('homeassistant')||{}).homeAssistant;const hs=cur&&cur.states&&cur.states['input_text.water_last_event'];\nif(hs&&hs.state===cd.text)return null;\nreturn {payload:{action:'input_text.set_value',target:{entity_id:'input_text.water_last_event'},data:{value:cd.text}}};",
     "id": "wu-prev-fmt",
     "initialize": "",
     "libs": [],
@@ -4150,8 +4107,8 @@
       ]
     ],
     "x": 960,
-    "y": 260,
-    "z": "wt-tab"
+    "y": 2400,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -4170,8 +4127,8 @@
       ]
     ],
     "x": 1400,
-    "y": 320,
-    "z": "a153e5ec68e13b8a"
+    "y": 5440,
+    "z": "wu-tab"
   },
   {
     "finalize": "",
@@ -4191,6 +4148,129 @@
     ],
     "x": 860,
     "y": 240,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-unified",
+    "info": "",
+    "name": "UNIFIED: recorder, dashboard values, 6 PM email, daily supply record (Previous card)",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 40,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-ctrl",
+    "info": "",
+    "name": "CONTROLLER: probes, drain tests, pump, pump probes, event layer, supply window learner",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 1600,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-tg",
+    "info": "",
+    "name": "TELEGRAM BOT: commands, chat, live updates, group notices",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 2180,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-core",
+    "info": "",
+    "name": "AI CORE: config (roles, models, budget), model list, call router",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 2660,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-ctx",
+    "info": "",
+    "name": "AI CONTEXT AND TOOLS: context builder, SQL tools, agent loop",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 3260,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-diag",
+    "info": "",
+    "name": "AI DIAGNOSTICS: call log, model bench, schema",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 4060,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-fc",
+    "info": "",
+    "name": "FORECAST: AI forecast (shadow) and 7-day supply forecast",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 4460,
+    "z": "wu-tab"
+  },
+  {
+    "id": "sec-an",
+    "info": "",
+    "name": "AI ANOMALIES AND DIGESTS",
+    "type": "comment",
+    "wires": [],
+    "x": 360,
+    "y": 5100,
+    "z": "wu-tab"
+  },
+  {
+    "crontab": "",
+    "id": "tg-init-tick",
+    "name": "On start: free chat on",
+    "once": true,
+    "onceDelay": "1",
+    "payload": "",
+    "payloadType": "date",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "topic": "",
+    "type": "inject",
+    "wires": [
+      [
+        "tg-init"
+      ]
+    ],
+    "x": 1120,
+    "y": 2180,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "// Free chat is on unless /chat off was used since the last restart (the flag was lost on every restart before 7 Nov 2026).\nconst t = flow.get('tg') || {};\nif (t.chat === undefined) t.chat = true;\nt.hist = t.hist || {}; t.busy = t.busy || {};\nflow.set('tg', t);\nreturn null;",
+    "id": "tg-init",
+    "initialize": "",
+    "libs": [],
+    "name": "Telegram state defaults",
+    "noerr": 0,
+    "outputs": 1,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      []
+    ],
+    "x": 1330,
+    "y": 2180,
     "z": "wu-tab"
   }
 ]
