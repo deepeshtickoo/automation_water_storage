@@ -6,6 +6,7 @@ A residential water supply storage solution for a 5-storey building in Delhi NCR
 
 - Detects municipal supply with short drain-valve probes, so the pump never runs dry looking for water.
 - Waits out the contaminated first water, then runs drain tests that compare TDS before and after to decide whether to pump.
+- Keeps filling late in a supply day, when line pressure is too low for the valve to show flow, by testing with short pump pulses.
 - Fills 3 x 2000 L rooftop tanks (one shared volume, about 15 m rising main): 80% is a successful fill, 95% is a completed fill.
 - Forecasts the next 7 days of supply from its own history and probes less on days no supply is expected.
 - Reports through a Telegram bot (owner and family group), a Home Assistant dashboard and a daily 6 PM email.
@@ -29,13 +30,14 @@ Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One b
 - Supply day: from 12:00 PM to 6:00 PM, open the valve for 10 s every 5 minutes to look for flow.
 - First flow: stop probing for 33 minutes to let the contaminated water pass.
 - Drain test: valve open 5 minutes, TDS before vs after. Falling, or steady inside 100-240 ppm: 50 s pump pulse, then keep filling while TDS stays in range. Rising: no pump, test again every 15 minutes.
-- Stops: tank 95% (done for the day), TDS out of range, dry run, supply lost, 120-minute cap per pump run.
+- Pump probes: once a fill has proven the supply (10 minutes, tank up 3 points, good flow and TDS), a valve check that sees no flow switches to a 50 s pump test every 15 minutes. Two dry tests in a row, or a pump-probe fill that raises the tank less than 2 points in 20 minutes, ends pump probes for the day.
+- Stops: tank 95% (done for the day), TDS out of range, dry run, supply lost, 2-hour cap per pump run.
 - No-supply day (from the 7-day forecast): probe every 30 minutes, 12:00 PM to 4:00 PM only. Any flow switches to the supply-day routine.
-- Manual mode from the dashboard pauses the controller and returns to automatic after 90 minutes.
+- Manual mode from the dashboard pauses the controller and returns to automatic after 1h 30m.
 
 ## Node-RED tabs (node-red/flows.json)
 
-- Water System (Lean): controller, event layer (flow, fill, successful, completed, failed events), supply window learner.
+- Water System (Lean): controller, event layer (one supply event per day, with fill, successful, completed and failed fills), supply window learner.
 - Water System (Unified): SQLite recorder, dashboard values, 6 PM email, day forecast.
 - Water AI Core, Context and Tools, Forecast (shadow), Anomalies and Digests, Diagnostics: model routing with fallbacks, call budget, read-only tools, agent loop, forecast scoring.
 - Water Telegram Chat: /status, /week, /insights, free chat, owner-only settings (/window, /tds) applied after /yes, live updates and group notices.
@@ -50,4 +52,4 @@ Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One b
 
 ## Versioning
 
-This repository is updated automatically from the live system by a Node-RED Git Sync flow, one pull request per noteworthy change. See CHANGELOG.md. Keys, tokens, chat IDs, email addresses and private hostnames are redacted before publishing.
+This repository is updated automatically from the live system by a Node-RED Git Sync flow: one pull request per noteworthy change, plus a nightly 11 PM sync that publishes only when the flows changed. See CHANGELOG.md. Keys, tokens, chat IDs, email addresses and private hostnames are redacted before publishing.
