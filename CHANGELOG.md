@@ -6,6 +6,10 @@ Published automatically from the live Node-RED instance.
 
 Cleanup: removed the old switched-off controller (v5) and everything that only fed it (Water Day / No Water Day buttons, old Day selector route), the orphaned AI summary node and its error nodes, 3 old disabled water tabs and 7 empty tabs. The two 1-second ticks are merged into one. Manual test buttons (model bench, AI tests, call log, schema, count rows) moved to a new Water Tools tab. 343 to 268 nodes; no change to how the water system runs.
 
+## v1.2.1 (2026-11-08)
+
+Cleanup: removed the old switched-off controller (v5) and everything that only fed it (Water Day / No Water Day buttons, old Day selector route), the orphaned AI summary node and its error nodes, 3 old disabled water tabs and 7 empty tabs. The two 1-second ticks are merged into one. Manual test buttons (model bench, AI tests, call log, schema, count rows) moved to a new Water Tools tab. 343 to 268 nodes; no change to how the water system runs.
+
 ## v1.2.0 (2026-11-08)
 
 All water flows merged into one Node-RED tab, Water System, with labelled sections (Unified, Controller, Telegram bot, AI core, AI context and tools, AI diagnostics, Forecast, Anomalies and digests). One daily supply record (one row per day) is now read by the dashboard Previous card, the Telegram bot and the AI context, so they always agree; pump time comes from the minute readings, which fixes inflated totals on 29 Oct and 4 Nov. The bot agent now uses gemini-3.6-flash first with nemotron as fallback (free models only). Free chat stays on after restarts. Changelog messages are no longer cut at 300 characters.
