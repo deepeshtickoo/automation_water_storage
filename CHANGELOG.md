@@ -2,6 +2,10 @@
 
 Published automatically from the live Node-RED instance.
 
+## v1.2.2 (2026-11-12)
+
+Nightly sync: changes in Water System.
+
 ## v1.2.1 (2026-11-08)
 
 Cleanup: removed the old switched-off controller (v5) and everything that only fed it (Water Day / No Water Day buttons, old Day selector route), the orphaned AI summary node and its error nodes, 3 old disabled water tabs and 7 empty tabs. The two 1-second ticks are merged into one. Manual test buttons (model bench, AI tests, call log, schema, count rows) moved to a new Water Tools tab. 343 to 268 nodes; no change to how the water system runs.
