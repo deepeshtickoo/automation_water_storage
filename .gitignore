@@ -1,3 +1,4 @@
 secrets.yaml
 *.secret
 .esphome/
+node_modules/

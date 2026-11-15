@@ -1,5 +1,7 @@
 # Water API
 
+[![Water API](https://github.com/deepeshtickoo/automation_water_storage/actions/workflows/water-api.yml/badge.svg)](https://github.com/deepeshtickoo/automation_water_storage/actions/workflows/water-api.yml)
+
 A small read-only web API and phone dashboard for the water supply storage solution. It runs as a local Home Assistant app (add-on) next to Node-RED, reads the controller's SQLite database and Home Assistant's live sensor states, and never writes to either.
 
 Built with Node.js 22, Express and Node's built-in SQLite module, packaged as a Docker container managed by the Home Assistant Supervisor.
@@ -35,6 +37,10 @@ Built with Node.js 22, Express and Node's built-in SQLite module, packaged as a 
 - **Live data** comes from the Home Assistant REST API through the Supervisor (`homeassistant_api: true`), so no long-lived token is stored.
 - **Login.** Set a username and password in the app's Configuration tab to turn on HTTP Basic auth for every page and endpoint. Leave the username empty to accept any username with the right password. Comparisons are constant-time.
 - **No rebuild for code changes.** The image only holds Node and Express. At start the container runs `/share/water-api.js` if it exists, otherwise the bundled `server.js`, so editing the shared file and restarting the app is enough. Dependencies are installed in their own Docker layer, so rebuilding is quick too.
+
+## Tests and CI
+
+`npm test` starts the real server against a throwaway SQLite database and checks the login, every endpoint and the charts (Node's built-in test runner, no extra packages). GitHub Actions runs the tests and builds the Docker image on every push that touches `water-api/`.
 
 ## Install
 
