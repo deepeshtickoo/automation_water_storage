@@ -1,0 +1,163 @@
+# Observability stack for TrueNAS SCALE: Apps > Discover Apps > ⋮ > Install via YAML
+# Name the app "observability" and paste this whole file.
+#
+# Before installing, on TrueNAS:
+#   1. Make the folders (Datasets, or a shell):  /mnt/<POOL>/apps/observability/{prometheus,grafana,loki,mosquitto}
+#   2. Replace every <POOL> below with your pool name.
+#   3. In Home Assistant: Profile > Security > Long-lived access tokens > Create, name it "prometheus".
+#      Paste it into the prometheus config (see the bottom of this file), never into chat.
+#
+# Ports: Grafana 3030, Prometheus 9090, Loki 3100, MQTT 1883 (login required), Alloy UI 12345
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    user: "0"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=90d
+    ports: ["9090:9090"]
+    volumes:
+      - /mnt/<POOL>/apps/observability/prometheus:/prometheus
+    configs:
+      - source: prometheus_yml
+        target: /etc/prometheus/prometheus.yml
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    pid: host
+    command: ["--path.rootfs=/host"]
+    volumes:
+      - /:/host:ro,rslave
+
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    restart: unless-stopped
+    user: "0"
+    ports: ["3030:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Grafana asks you to set a new password on first login (default admin/admin).
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - /mnt/<POOL>/apps/observability/grafana:/var/lib/grafana
+    configs:
+      - source: grafana_datasources
+        target: /etc/grafana/provisioning/datasources/datasources.yml
+
+  loki:
+    image: grafana/loki:3.2.1
+    restart: unless-stopped
+    user: "0"
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports: ["3100:3100"]
+    volumes:
+      - /mnt/<POOL>/apps/observability/loki:/loki
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    restart: unless-stopped
+    ports: ["1883:1883"]
+    volumes:
+      - /mnt/<POOL>/apps/observability/mosquitto:/mosquitto/data
+    configs:
+      - source: mosquitto_conf
+        target: /mosquitto/config/mosquitto.conf
+
+
+  alloy:
+    image: grafana/alloy:v1.4.3
+    restart: unless-stopped
+    user: "0"
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    configs:
+      - source: alloy_config
+        target: /etc/alloy/config.alloy
+
+configs:
+  prometheus_yml:
+    content: |
+      global:
+        scrape_interval: 30s
+      scrape_configs:
+        - job_name: prometheus
+          static_configs: [{ targets: ["localhost:9090"] }]
+        - job_name: truenas
+          static_configs: [{ targets: ["node-exporter:9100"] }]
+        - job_name: home_assistant
+          metrics_path: /api/prometheus
+          scheme: http
+          authorization:
+            credentials: PASTE_HOME_ASSISTANT_TOKEN_HERE
+          static_configs: [{ targets: ["homeassistant.local:80"] }]
+
+  grafana_datasources:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus:9090
+          isDefault: true
+        - name: Loki
+          type: loki
+          url: http://loki:3100
+
+
+  mosquitto_conf:
+    content: |
+      listener 1883
+      persistence true
+      persistence_location /mosquitto/data/
+      allow_anonymous false
+      password_file /mosquitto/data/passwd
+
+  alloy_config:
+    content: |
+      // Every container on TrueNAS: Frigate, Immich, Nextcloud, cloudflared, this stack...
+      discovery.docker "containers" {
+        host = "unix:///var/run/docker.sock"
+      }
+      discovery.relabel "containers" {
+        targets = []
+        rule {
+          source_labels = ["__meta_docker_container_name"]
+          regex         = "/(.*)"
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+          target_label  = "app"
+        }
+      }
+      loki.source.docker "containers" {
+        host          = "unix:///var/run/docker.sock"
+        targets       = discovery.docker.containers.targets
+        labels        = { job = "docker" }
+        relabel_rules = discovery.relabel.containers.rules
+        forward_to    = [loki.write.local.receiver]
+      }
+      // TrueNAS host log (systemd journal)
+      loki.source.journal "host" {
+        max_age    = "12h"
+        labels     = { job = "truenas" }
+        forward_to = [loki.write.local.receiver]
+      }
+      loki.write "local" {
+        endpoint {
+          url = "http://loki:3100/loki/api/v1/push"
+        }
+      }

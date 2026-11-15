@@ -9,11 +9,13 @@
 
 ## Stack
 
-Prometheus, node-exporter, Grafana, Loki and Mosquitto run as one Docker Compose app on TrueNAS SCALE, next to the Home Assistant VM, so monitoring keeps working while Home Assistant restarts.
+Prometheus, node-exporter, Grafana, Loki, Grafana Alloy and Mosquitto run as one Docker Compose app on TrueNAS SCALE, next to the Home Assistant VM, so monitoring keeps working while Home Assistant restarts. The compose file is [`infra/truenas-observability.yaml`](../infra/truenas-observability.yaml) (pool path and token are placeholders).
 
 ```
-ESP32 sensors -> Home Assistant -> /api/prometheus -> Prometheus -> Grafana
-TrueNAS host  -> node-exporter                    -> Prometheus -> Grafana
+Metrics:  ESP32 sensors -> Home Assistant -> /api/prometheus -> Prometheus -> Grafana
+          TrueNAS host  -> node-exporter                    -> Prometheus -> Grafana
+Logs:     every container + the TrueNAS journal -> Grafana Alloy -> Loki -> Grafana
+Messages: Mosquitto MQTT broker (password login) for devices that should not depend on Home Assistant
 ```
 
 ## Import
