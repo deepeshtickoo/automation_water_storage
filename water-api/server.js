@@ -8,10 +8,13 @@ const db = new DatabaseSync(DB_PATH, { readOnly: true });
 const app = express();
 const IST = 330 * 60000;
 
-// ---------- login (password from the app's Configuration tab) ----------
+// ---------- login (username and password from the app's Configuration tab) ----------
+let USERNAME = process.env.WATER_USERNAME || "";
 let PASSWORD = process.env.WATER_PASSWORD || "";
 try {
-  PASSWORD = JSON.parse(fs.readFileSync("/data/options.json", "utf8")).password || PASSWORD;
+  const opts = JSON.parse(fs.readFileSync("/data/options.json", "utf8"));
+  USERNAME = opts.username || USERNAME;
+  PASSWORD = opts.password || PASSWORD;
 } catch {}
 
 const same = (a, b) => {
@@ -24,8 +27,9 @@ app.use((req, res, next) => {
   if (!PASSWORD) return next();
   const [type, value] = (req.headers.authorization || "").split(" ");
   if (type === "Basic" && value) {
-    const pass = Buffer.from(value, "base64").toString().split(":").slice(1).join(":");
-    if (same(pass, PASSWORD)) return next();
+    const [user, ...rest] = Buffer.from(value, "base64").toString().split(":");
+    const pass = rest.join(":");
+    if (same(pass, PASSWORD) && (!USERNAME || same(user, USERNAME))) return next();
   }
   res.set("WWW-Authenticate", 'Basic realm="Water API"').status(401).send("Login required");
 });

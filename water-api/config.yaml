@@ -1,5 +1,5 @@
 name: Water API
-version: "0.3.0"
+version: "0.3.1"
 slug: water_api
 description: Express API for water.db
 arch: [amd64, aarch64]
@@ -10,8 +10,10 @@ map:
   - all_addon_configs:ro
   - share:ro
 options:
+  username: ""
   password: ""
 schema:
+  username: str?
   password: password?
 ports:
   3000/tcp: 3000

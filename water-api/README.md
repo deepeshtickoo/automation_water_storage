@@ -33,14 +33,14 @@ Built with Node.js 22, Express and Node's built-in SQLite module, packaged as a 
 
 - **Read-only by design.** The database is opened with `readOnly: true` and mounted read-only into the container. The Node-RED controller stays the only writer.
 - **Live data** comes from the Home Assistant REST API through the Supervisor (`homeassistant_api: true`), so no long-lived token is stored.
-- **Login.** Set a password in the app's Configuration tab to turn on HTTP Basic auth for every page and endpoint. The comparison is constant-time.
+- **Login.** Set a username and password in the app's Configuration tab to turn on HTTP Basic auth for every page and endpoint. Leave the username empty to accept any username with the right password. Comparisons are constant-time.
 - **No rebuild for code changes.** The image only holds Node and Express. At start the container runs `/share/water-api.js` if it exists, otherwise the bundled `server.js`, so editing the shared file and restarting the app is enough. Dependencies are installed in their own Docker layer, so rebuilding is quick too.
 
 ## Install
 
 1. Copy this folder to the Home Assistant `addons` share (Samba share or Studio Code Server), for example `addons/water-api/`.
 2. Settings → Apps → App Store → ⋮ → Check for updates, then install **Water API** from the local apps section.
-3. Optional: set a password in the Configuration tab.
+3. Optional: set a username and password in the Configuration tab.
 4. Start it and open `http://homeassistant.local:3000/live`.
 5. To edit the code without rebuilding, copy `server.js` to `share/water-api.js`, edit it there and restart the app.
 
