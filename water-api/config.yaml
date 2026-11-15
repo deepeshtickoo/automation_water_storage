@@ -1,10 +1,11 @@
 name: Water API
-version: "0.3.1"
+version: "0.3.2"
 slug: water_api
 description: Express API for water.db
 arch: [amd64, aarch64]
 startup: application
 boot: auto
+webui: "http://[HOST]:[PORT:3000]/live"
 homeassistant_api: true
 map:
   - all_addon_configs:ro

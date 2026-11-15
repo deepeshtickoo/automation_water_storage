@@ -1,0 +1,32 @@
+name: Water API
+
+on:
+  push:
+    paths: ["water-api/**", ".github/workflows/water-api.yml"]
+  pull_request:
+    paths: ["water-api/**", ".github/workflows/water-api.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: water-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm test
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app image
+        run: docker build -t water-api:ci water-api
+      - name: Check the image starts
+        run: |
+          docker run --rm --entrypoint node water-api:ci -e "require('express'); console.log('express ok')"
