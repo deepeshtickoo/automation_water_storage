@@ -1,0 +1,17 @@
+name: Water API
+version: "0.3.0"
+slug: water_api
+description: Express API for water.db
+arch: [amd64, aarch64]
+startup: application
+boot: auto
+homeassistant_api: true
+map:
+  - all_addon_configs:ro
+  - share:ro
+options:
+  password: ""
+schema:
+  password: password?
+ports:
+  3000/tcp: 3000

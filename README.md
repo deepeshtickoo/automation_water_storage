@@ -48,6 +48,10 @@ Everything runs in one tab, Water System, split into labelled sections:
 - Forecast: AI forecast (shadow, scored) and the 7-day supply forecast (code only, no AI).
 - Anomalies and digests.
 
+## Water API (water-api/)
+
+A read-only Node.js and Express app that runs as a local Home Assistant app and serves a phone dashboard (live, today, history charts) and a JSON API from the controller's SQLite database. See [water-api/README.md](water-api/README.md).
+
 ## Install
 
 1. ESPHome: copy secrets.yaml.example to secrets.yaml, fill it in, then flash motor.yaml and tank.yaml.
