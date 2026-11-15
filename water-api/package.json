@@ -1,0 +1,8 @@
+{
+  "name": "water-api",
+  "version": "0.3.1",
+  "description": "Read-only web API and phone dashboard for the water supply storage solution",
+  "main": "server.js",
+  "license": "MIT",
+  "dependencies": { "express": "^4.21.0" }
+}
