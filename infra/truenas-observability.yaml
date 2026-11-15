@@ -127,7 +127,7 @@ configs:
 
   alloy_config:
     content: |
-      // Every container on TrueNAS: Frigate, Immich, Nextcloud, cloudflared, this stack...
+      // Every container on TrueNAS, including this stack
       discovery.docker "containers" {
         host = "unix:///var/run/docker.sock"
       }
