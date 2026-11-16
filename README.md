@@ -7,7 +7,7 @@ A residential water supply storage solution for a 5-storey building in Delhi NCR
 - Detects municipal supply with short drain-valve probes, so the pump never runs dry looking for water.
 - Waits out the contaminated first water, then runs 5-minute valve checks that compare TDS at the start and the end to decide whether to pump.
 - Keeps filling through low-pressure spells by testing with short pump pulses every 30 minutes, and stops for the day when two pulses in a row find no good flow.
-- Fills 3 x 2000 L rooftop tanks (one shared volume, about 15 m rising main): 80% is a successful fill, 95% is a completed fill.
+- Fills 3 x 2000 L rooftop tanks (one shared volume, about 15 m rising main): 80% is a successful fill, 92% is a completed fill.
 - Keeps one daily supply record (one row per day) that the dashboard, the Telegram bot and the AI all read, so they always agree.
 - Forecasts the next 7 days of supply from its own history and probes less on days no supply is expected.
 - Reports through a Telegram bot (owner and family group), a Home Assistant dashboard and a daily 6 PM email.
@@ -32,9 +32,9 @@ Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One b
 - Water found: wait 40 minutes from first flow to let the contaminated water pass.
 - Valve check: valve open 5 minutes, TDS at the start vs the end. Falling, or steady inside 100-240 ppm: 50 s pump pulse. Rising: no pump, check again 15 minutes later. No flow through the valve: a pump pulse tests the water instead.
 - Pump pulse: if TDS is in range at 50 s, keep filling; otherwise stop and go back to valve checks every 15 minutes.
-- While filling: tank 95% ends the day. Flow 19 L/min or below, or a dry run, stops the pump; pump pulses then run every 30 minutes, and two pulses in a row with no good flow end the day. TDS leaving the range goes back to valve checks. A single run is capped at 2 hours, followed by a 2-minute rest and a new pulse.
+- While filling: tank 92% ends the day. Flow 19 L/min or below, or a dry run, stops the pump; pump pulses then run every 30 minutes, and two pulses in a row with no good flow end the day. TDS leaving the range goes back to valve checks. A single run is capped at 2 hours, followed by a 2-minute rest and a new pulse.
 - If the pump-side ESP32 drops off Wi-Fi while filling, the pump keeps running for up to 5 minutes, using the plug power reading as the dry-run check.
-- No-supply day (from the 7-day forecast): probe every 30 minutes, 12:00 PM to 4:00 PM only. Any flow switches to the supply-day routine.
+- No-supply day (from the 7-day forecast): probe every 15 minutes, 12:00 PM to 6:00 PM. Any flow switches to the supply-day routine.
 - Manual mode from the dashboard pauses the controller and returns to automatic after 1h 30m.
 
 ## Node-RED flow (node-red/flows.json)
