@@ -3157,7 +3157,8 @@
     "type": "link in",
     "wires": [
       [
-        "wt-notify"
+        "wt-notify",
+        "wl-log-fn"
       ]
     ],
     "x": 140,
@@ -3651,6 +3652,53 @@
     ],
     "x": 590,
     "y": 1840,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "// Added 18 Nov 2026: mirrors every line the owner gets on Telegram into the Home Assistant logbook, so the water dashboard can show Today's log. No control effect.\nconst text = String(msg.payload == null ? '' : msg.payload).trim();\nif (!text || msg.topic === 'schedule') return null;\nconst now = Date.now();\nconst seen = flow.get('dashLogSeen') || {};\nObject.keys(seen).forEach((k) => { if (now - seen[k] > 600000) delete seen[k]; });\nif (seen[text]) return null;\nseen[text] = now;\nflow.set('dashLogSeen', seen);\nreturn { payload: { data: { name: 'Water Bot', message: text.slice(0, 500), entity_id: 'input_boolean.water_log' } } };",
+    "id": "wl-log-fn",
+    "initialize": "",
+    "libs": [],
+    "name": "Dashboard log: copy of each owner line (additive)",
+    "noerr": 0,
+    "outputs": 1,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      [
+        "wl-log-call"
+      ]
+    ],
+    "x": 400,
+    "y": 2600,
+    "z": "wu-tab"
+  },
+  {
+    "action": "logbook.log",
+    "areaId": [],
+    "blockInputOverrides": false,
+    "data": "{}",
+    "dataType": "json",
+    "debugenabled": false,
+    "deviceId": [],
+    "entityId": [],
+    "floorId": [],
+    "id": "wl-log-call",
+    "labelId": [],
+    "mergeContext": "",
+    "mustacheAltTags": false,
+    "name": "Write to HA logbook (Water log)",
+    "outputProperties": [],
+    "queue": "none",
+    "server": "7e55f602.47a88",
+    "type": "api-call-service",
+    "version": 7,
+    "wires": [
+      []
+    ],
+    "x": 700,
+    "y": 2600,
     "z": "wu-tab"
   }
 ]
