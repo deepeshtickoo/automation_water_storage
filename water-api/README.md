@@ -2,52 +2,87 @@
 
 [![Water API](https://github.com/deepeshtickoo/automation_water_storage/actions/workflows/water-api.yml/badge.svg)](https://github.com/deepeshtickoo/automation_water_storage/actions/workflows/water-api.yml)
 
-A small read-only web API and phone dashboard for the water supply storage solution. It runs as a local Home Assistant app (add-on) next to Node-RED, reads the controller's SQLite database and Home Assistant's live sensor states, and never writes to either.
+The web app for the water supply storage solution. It shows how much water is in the tanks, when the next municipal supply is expected, how each fill went, and lets the household switch the pumps by hand. It runs as a local Home Assistant app next to Node-RED, on the home server.
 
-Built with Node.js 22, Express and Node's built-in SQLite module, packaged as a Docker container managed by the Home Assistant Supervisor.
+The front end is React with TypeScript, built with Vite. The back end is Node.js 22 with Express and Node's built-in SQLite module, packaged as a Docker image that the Home Assistant Supervisor manages.
 
-| Live | Today | History |
+![Overview](screenshots/overview.png)
+
+| Phone | Manual control | Dark |
 |---|---|---|
-| ![Live](screenshots/live.png) | ![Today](screenshots/today.png) | ![History](screenshots/history.png) |
+| ![Phone overview](screenshots/mobile.png) | ![Controls](screenshots/controls-mobile.png) | ![Dark mode](screenshots/overview-dark.png) |
 
-*Screenshots use sample data.*
+*Screenshots use preview data modelled on the real records. Add `?demo` to the address to see the app the same way.*
 
-## Pages
+## Screens
 
-| Page | What it shows |
+| Screen | What it shows |
 |---|---|
-| `/live` | Tank level, pump on/off and watts, drain valve, flow, TDS and mains voltage, straight from Home Assistant, refreshed every 5 seconds |
-| `/today` | Tank now and change since midnight, pump time, successful fills, supply checks that found good water, today's pump runs and supply events |
-| `/history` | Tank level, pump power and TDS charts for the last 24 hours, 3 days, 7 days or 30 days (server-drawn SVG, no chart library) |
-| `/` | Every table in the database, each linking to its latest rows as JSON |
+| Overview | The tank as a live cross-section with its working marks (pump stop at 92%, top-up level, and the level expected when the next supply arrives), a one-line summary of what the system is doing, the next supply, today's activity on a 24-hour strip, equipment status and the 7-day supply forecast |
+| Supply | A supply calendar for the last 8 weeks, every supply event with its tank change, pump time, TDS range and peak flow, and the submersible top-ups |
+| Trends | Tank level, water quality, incoming flow and pump power for 24 hours to 30 days, with pump runs shaded |
+| Controls | Manual control (hands back to the automatic system after 90 minutes), main pump, drain valve and submersible. Every switch asks first, and the pump and valve need manual control |
+| Settings | The submersible top-up rules, editable, with a worked example, and the automatic system's rules in plain words |
+| System | Device health, open alerts from the AI anomaly reviewer, AI usage, database size and the controller's recent activity |
+
+![Supply](screenshots/supply.png)
+
+## How it fits together
+
+```
+ ESP32 sensors ─┐
+ Tapo plugs ────┼─> Home Assistant ──┐
+                │                    ├─> Water API (this app) ──> browser
+ Node-RED controller ──> water.db ───┤      React app + JSON API
+        └── /endpoint/water/* ───────┘
+```
+
+- **water.db** is the controller's SQLite database. The app opens it read-only, from a read-only mount; Node-RED stays the only writer.
+- **Home Assistant** supplies live states and does the switching, through the Supervisor API (`homeassistant_api: true`), so no long-lived token is stored.
+- **Node-RED** exposes the controller's own state (current phase, open supply event, the 7-day forecast, the top-up state) and accepts top-up settings, on two small HTTP endpoints. Their login lives in `/share/water-api.secrets.json`, outside the repository.
 
 ## JSON API
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/live` | Current sensor and switch states from Home Assistant |
-| `GET /api/today` | Today's summary (Indian Standard Time day) |
-| `GET /api/history?hours=24` | Minute readings (tank, pump watts, TDS), up to 30 days |
-| `GET /api/tables` | Table names |
-| `GET /api/table/:name?limit=50` | Latest rows of one table (max 500) |
+| `GET /api/v1/now` | Live snapshot: tank, flow, TDS, pumps, valve, manual control, controller state, forecast, top-up state |
+| `GET /api/v1/today` | Today's readings, pump runs, top-ups, supply checks and events (Indian Standard Time day) |
+| `GET /api/v1/history?hours=72` | Readings averaged down to at most 600 points, plus pump runs, up to 90 days |
+| `GET /api/v1/events?days=56` | Supply events, the daily supply record, daily summaries and top-ups |
+| `GET /api/v1/system` | Device health, open alerts, controller log, AI and database counts |
+| `GET/POST /api/v1/settings` | Submersible top-up settings, range-checked on the way in |
+| `POST /api/v1/control` | `{ "target": "pump" \| "valve" \| "sub" \| "manual", "on": true }`. The pump and valve refuse to switch on unless manual control is on |
+| `GET /api/health` | Version and whether the web app is installed |
 
-## How it is built
+The older `/api/live`, `/api/history`, `/api/tables` and `/api/table/:name` still work, and the old `/live`, `/today` and `/history` pages now open the matching screen.
 
-- **Read-only by design.** The database is opened with `readOnly: true` and mounted read-only into the container. The Node-RED controller stays the only writer.
-- **Live data** comes from the Home Assistant REST API through the Supervisor (`homeassistant_api: true`), so no long-lived token is stored.
-- **Login.** Set a username and password in the app's Configuration tab to turn on HTTP Basic auth for every page and endpoint. Leave the username empty to accept any username with the right password. Comparisons are constant-time.
-- **No rebuild for code changes.** The image only holds Node and Express. At start the container runs `/share/water-api.js` if it exists, otherwise the bundled `server.js`, so editing the shared file and restarting the app is enough. Dependencies are installed in their own Docker layer, so rebuilding is quick too.
+## Design notes
 
-## Tests and CI
+- One visual idea carries the app: the tank. Everything around it stays quiet, with a limestone and cobalt palette, Bricolage Grotesque for figures and headings and IBM Plex Sans for text. Fonts are bundled, so the app works on the home network without internet.
+- Light and dark themes follow the phone, with a manual override.
+- Copy is written for the household, not for engineers: "Next supply Tuesday around 12 PM", "Lasts about 5 days at the usual pace".
+- Charts are hand-drawn SVG with no chart library, and the server thins readings before sending them, so the whole app is about 90 KB of script over the wire.
+- Keyboard focus is visible, motion is limited to the water itself and respects reduced-motion settings, and dialogs become bottom sheets on phones.
 
-`npm test` starts the real server against a throwaway SQLite database and checks the login, every endpoint and the charts (Node's built-in test runner, no extra packages). GitHub Actions runs the tests and builds the Docker image on every push that touches `water-api/`.
+## Running it
 
-## Install
+```bash
+# API, against a copy of the database
+WATER_DB=./water.db WATER_PASSWORD=secret npm start
 
-1. Copy this folder to the Home Assistant `addons` share (Samba share or Studio Code Server), for example `addons/water-api/`.
-2. Settings → Apps → App Store → ⋮ → Check for updates, then install **Water API** from the local apps section.
-3. Optional: set a username and password in the Configuration tab.
-4. Start it and open `http://homeassistant.local:3000/live`.
-5. To edit the code without rebuilding, copy `server.js` to `share/water-api.js`, edit it there and restart the app.
+# Web app with hot reload, proxying /api to the server above
+cd web && npm ci && npm run dev
 
-Change the database path (`WATER_DB`) and the entity IDs at the top of `server.js` to match your setup.
+# Web app on preview data only
+open "http://localhost:5173/?demo"
+
+# Tests (server) and type-check plus build (web)
+npm test
+cd web && npm run build
+```
+
+`npm run build` writes the app to `public/` and a `manifest.json` listing its files. The Docker image includes `public/`. On the home server a newer copy can be dropped into `/share/water-web` (the Node-RED Water Tools tab has an installer that downloads it from this repository), and `/share/water-api.js` overrides the bundled server, so updates need only an app restart.
+
+## Login
+
+Set a username and password in the app's Configuration tab to turn on HTTP Basic auth for every page and endpoint. Leave the username empty to accept any username with the right password. Comparisons are constant-time.

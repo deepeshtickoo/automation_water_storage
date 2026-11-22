@@ -1,14 +1,27 @@
+// Water API 1.0: the residential water supply storage console.
+// Serves the React app (WEB_DIR) and a JSON API built from three sources:
+//   water.db (read-only, written by Node-RED), Home Assistant (live states, switching),
+//   and Node-RED's controller state (http endpoints on the Node-RED app).
 const express = require("express");
 const fs = require("node:fs");
+const path = require("node:path");
 const crypto = require("node:crypto");
 const { DatabaseSync } = require("node:sqlite");
 
 const DB_PATH = process.env.WATER_DB || "/addon_configs/a0d7b954_nodered/node-red/water.db";
+// The web app: a newer copy in /share wins over the one baked into the image.
+const WEB_DIR = process.env.WATER_WEB || ["/share/water-web", path.join(__dirname, "public")].find((d) => fs.existsSync(path.join(d, "index.html"))) || path.join(__dirname, "public");
+const SECRETS = process.env.WATER_SECRETS || "/share/water-api.secrets.json";
+const HA = "http://supervisor/core/api";
+const IST = 330 * 60000;
+const H = 3600000;
+
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
 const app = express();
-const IST = 330 * 60000;
+app.disable("x-powered-by");
+app.use(express.json({ limit: "32kb" }));
 
-// ---------- login (username and password from the app's Configuration tab) ----------
+// ---------- config ----------
 let USERNAME = process.env.WATER_USERNAME || "";
 let PASSWORD = process.env.WATER_PASSWORD || "";
 try {
@@ -16,24 +29,27 @@ try {
   USERNAME = opts.username || USERNAME;
   PASSWORD = opts.password || PASSWORD;
 } catch {}
+// Node-RED http endpoint login (kept out of the repo, in /share).
+let NR = { url: "http://172.30.32.1:1880/endpoint", user: "", pass: "" };
+try { NR = { ...NR, ...JSON.parse(fs.readFileSync(SECRETS, "utf8")).nodered }; } catch {}
 
+// ---------- login ----------
 const same = (a, b) => {
   const x = crypto.createHash("sha256").update(a).digest();
   const y = crypto.createHash("sha256").update(b).digest();
   return crypto.timingSafeEqual(x, y);
 };
-
 app.use((req, res, next) => {
   if (!PASSWORD) return next();
   const [type, value] = (req.headers.authorization || "").split(" ");
   if (type === "Basic" && value) {
     const [user, ...rest] = Buffer.from(value, "base64").toString().split(":");
-    const pass = rest.join(":");
-    if (same(pass, PASSWORD) && (!USERNAME || same(user, USERNAME))) return next();
+    if (same(rest.join(":"), PASSWORD) && (!USERNAME || same(user, USERNAME))) return next();
   }
-  res.set("WWW-Authenticate", 'Basic realm="Water API"').status(401).send("Login required");
+  res.set("WWW-Authenticate", 'Basic realm="Water storage"').status(401).send("Login required");
 });
 
+// ---------- helpers ----------
 const ENT = {
   tank: "sensor.esp32_tank_water_level",
   flow: "sensor.esp32_motor_water_flow_rate",
@@ -42,201 +58,237 @@ const ENT = {
   valve: "switch.esp32_motor_drain_valve_switch",
   watts: "sensor.water_motor_pump_current_consumption",
   volts: "sensor.water_motor_pump_voltage",
+  sub: "switch.random_smart_socket",
+  subWatts: "sensor.random_smart_socket_current_consumption",
+  subAutoOff: "number.random_smart_socket_turn_off_in",
+  manual: "input_boolean.water_manual_control",
+};
+const CONTROL = {
+  pump: ENT.pump,
+  valve: ENT.valve,
+  sub: ENT.sub,
+  manual: ENT.manual,
 };
 
-const tables = () =>
-  db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(t => t.name);
-
-const midnight = () => {
-  const d = new Date(Date.now() + IST);
-  d.setUTCHours(0, 0, 0, 0);
-  return d.getTime() - IST;
-};
-const time = ms => new Date(ms + IST).toISOString().slice(11, 16);
-const r1 = n => (n == null ? "-" : Math.round(n * 10) / 10);
-
-const page = (title, body, extra = "") => `<!doctype html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title}</title><style>
-body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#0f1419;color:#e6e6e6}
-h1{font-size:22px;margin:0 0 4px}.sub{color:#8a96a3;font-size:13px;margin-bottom:16px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-.card{background:#1a222b;border-radius:12px;padding:14px}
-.lbl{color:#8a96a3;font-size:13px}.val{font-size:28px;font-weight:600;margin-top:4px}
-.on{color:#4ade80}.off{color:#8a96a3}.bad{color:#f87171}
-.bar{height:10px;background:#2a3540;border-radius:5px;margin-top:8px;overflow:hidden}
-.bar div{height:100%;background:#38bdf8}
-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}
-td,th{text-align:left;padding:6px 4px;border-bottom:1px solid #2a3540}
-a{color:#38bdf8}nav{margin-bottom:16px}nav a{margin-right:14px}
-</style></head><body>
-<nav><a href="/live">Live</a><a href="/today">Today</a><a href="/history">History</a><a href="/">Tables</a></nav>
-${body}${extra}</body></html>`;
-
-// ---------- raw tables ----------
-app.get("/api/tables", (req, res) => res.json(tables()));
-
-app.get("/api/table/:name", (req, res) => {
-  const name = req.params.name;
-  if (!tables().includes(name)) return res.status(404).json({ error: "no such table" });
-  const limit = Math.min(parseInt(req.query.limit) || 50, 500);
-  res.json(db.prepare(`SELECT * FROM "${name}" ORDER BY rowid DESC LIMIT ?`).all(limit));
-});
-
-app.get("/", (req, res) => {
-  const links = tables().map(t => `<li><a href="/api/table/${t}">${t}</a></li>`).join("");
-  res.send(page("Water API", `<h1>Tables</h1><ul>${links}</ul>`));
-});
-
-// ---------- today ----------
-function today() {
-  const since = midnight();
-  const latest = db.prepare("SELECT * FROM readings ORDER BY ts DESC LIMIT 1").get();
-  const first = db.prepare("SELECT tank FROM readings WHERE ts >= ? ORDER BY ts ASC LIMIT 1").get(since);
-  const runs = db.prepare("SELECT * FROM pump_runs WHERE started_at >= ? ORDER BY started_at").all(since);
-  const events = db.prepare(
-    "SELECT * FROM events WHERE opened_at >= ? OR closed_at >= ? OR closed_at IS NULL ORDER BY opened_at"
-  ).all(since, since);
-  const probes = db.prepare("SELECT COUNT(*) n, SUM(good) good FROM probes WHERE ts >= ?").get(since);
-  return {
-    date: new Date(since + IST).toISOString().slice(0, 10),
-    tank_now: latest ? latest.tank : null,
-    tank_at_midnight: first ? first.tank : null,
-    last_reading: latest ? latest.ts : null,
-    pump_minutes: runs.reduce((s, r) => s + (r.minutes || 0), 0),
-    pump_runs: runs,
-    events,
-    probes: probes.n || 0,
-    good_probes: probes.good || 0,
-  };
+const haHeaders = () => ({ Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}`, "Content-Type": "application/json" });
+async function haState(id) {
+  try {
+    const r = await fetch(`${HA}/states/${id}`, { headers: haHeaders(), signal: AbortSignal.timeout(4000) });
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
 }
-
-app.get("/api/today", (req, res) => res.json(today()));
-
-app.get("/today", (req, res) => {
-  const t = today();
-  const change = t.tank_now != null && t.tank_at_midnight != null ? t.tank_now - t.tank_at_midnight : null;
-  const fills = t.events.filter(e => e.grade === "successful").length;
-  const runRows = t.pump_runs.map(r =>
-    `<tr><td>${time(r.started_at)}</td><td>${r1(r.minutes)} min</td><td>${r1(r.tank_start)}% → ${r1(r.tank_end)}%</td><td>${r.stop_reason || ""}</td></tr>`
-  ).join("") || `<tr><td colspan="4" class="off">No pump runs today</td></tr>`;
-  const evRows = t.events.map(e =>
-    `<tr><td>${time(e.opened_at)}${e.closed_at ? "–" + time(e.closed_at) : " (open)"}</td><td class="${e.grade === "successful" ? "on" : e.grade ? "bad" : ""}">${(e.grade || e.kind || "").replace(/_/g, " ")}</td><td>${e.reason || ""}</td></tr>`
-  ).join("") || `<tr><td colspan="3" class="off">No supply events today</td></tr>`;
-
-  res.send(page("Today", `
-<h1>Today</h1><div class="sub">${t.date}${t.last_reading ? " · last reading " + time(t.last_reading) : ""}</div>
-<div class="grid">
- <div class="card"><div class="lbl">Tank now</div><div class="val">${r1(t.tank_now)}%</div>
-  <div class="bar"><div style="width:${Math.max(0, Math.min(100, t.tank_now || 0))}%"></div></div></div>
- <div class="card"><div class="lbl">Since midnight</div><div class="val ${change > 0 ? "on" : ""}">${change == null ? "-" : (change > 0 ? "+" : "") + r1(change) + "%"}</div></div>
- <div class="card"><div class="lbl">Pump time</div><div class="val">${r1(t.pump_minutes)} min</div></div>
- <div class="card"><div class="lbl">Successful fills</div><div class="val">${fills}</div></div>
- <div class="card"><div class="lbl">Supply checks</div><div class="val">${t.good_probes}/${t.probes}</div><div class="lbl">found good water</div></div>
-</div>
-<h2>Pump runs</h2><table><tr><th>Start</th><th>Time</th><th>Tank</th><th>Stopped because</th></tr>${runRows}</table>
-<h2>Supply events</h2><table><tr><th>When</th><th>Result</th><th>Why</th></tr>${evRows}</table>`));
-});
-
-// ---------- live (from Home Assistant) ----------
-async function state(id) {
-  const r = await fetch(`http://supervisor/core/api/states/${id}`, {
-    headers: { Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}` },
+async function haStates(map) {
+  const out = {};
+  await Promise.all(Object.entries(map).map(async ([k, id]) => (out[k] = await haState(id))));
+  return out;
+}
+async function haCall(domain, service, entity_id) {
+  const r = await fetch(`${HA}/services/${domain}/${service}`, { method: "POST", headers: haHeaders(), body: JSON.stringify({ entity_id }), signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`Home Assistant said ${r.status}`);
+}
+async function nodeRed(pathname, body) {
+  const auth = NR.user ? { Authorization: "Basic " + Buffer.from(`${NR.user}:${NR.pass}`).toString("base64") } : {};
+  const r = await fetch(NR.url + pathname, {
+    method: body ? "POST" : "GET",
+    headers: { ...auth, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(5000),
   });
-  if (!r.ok) return null;
-  const j = await r.json();
-  return j.state;
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Node-RED said ${r.status}`);
+  return j;
 }
+const num = (s) => (s && s.state !== "unavailable" && s.state !== "unknown" && s.state !== "" && Number.isFinite(+s.state) ? +s.state : null);
+const sw = (s) => (s && (s.state === "on" || s.state === "off") ? s.state : null);
+const seen = (s) => (s ? Date.parse(s.last_reported || s.last_updated) : null);
+const midnight = () => { const d = new Date(Date.now() + IST); d.setUTCHours(0, 0, 0, 0); return d.getTime() - IST; };
+const istDate = (ms) => new Date(ms + IST).toISOString().slice(0, 10);
+const q = (sql, ...args) => { try { return db.prepare(sql).all(...args); } catch (e) { console.error(sql, e.message); return []; } };
+const q1 = (sql, ...args) => q(sql, ...args)[0] || null;
 
-app.get("/api/live", async (req, res) => {
-  try {
-    const out = {};
-    await Promise.all(Object.entries(ENT).map(async ([k, id]) => (out[k] = await state(id))));
-    out.ts = Date.now();
-    res.json(out);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+/** Average readings into at most `max` buckets so charts stay light. */
+function bucket(rows, max) {
+  if (rows.length <= max) return rows;
+  const t0 = rows[0].ts, span = rows[rows.length - 1].ts - t0 || 1, size = span / max;
+  const out = [];
+  let cur = null;
+  for (const r of rows) {
+    const b = Math.min(max - 1, Math.floor((r.ts - t0) / size));
+    if (!cur || cur.b !== b) { if (cur) out.push(fin(cur)); cur = { b, ts: r.ts, n: 0, tank: [0, 0], flow: [0, 0], tds: [0, 0], pump_w: [0, 0] }; }
+    for (const k of ["tank", "flow", "tds", "pump_w"]) if (r[k] != null) { cur[k][0] += r[k]; cur[k][1]++; }
   }
+  if (cur) out.push(fin(cur));
+  return out;
+  function fin(c) {
+    const avg = (k) => (c[k][1] ? Math.round((c[k][0] / c[k][1]) * 10) / 10 : null);
+    return { ts: c.ts, tank: avg("tank"), flow: avg("flow"), tds: avg("tds"), pump_w: avg("pump_w") };
+  }
+}
+
+const DEFAULT_CFG = { startBelow: 20, leaveAtSupply: 25, maxTarget: 50, minHoursAway: 6, maxRunMin: 60 };
+
+// ---------- v1 API (used by the web app) ----------
+app.get("/api/v1/now", async (req, res) => {
+  const [s, nr] = await Promise.all([haStates(ENT), nodeRed("/water/state").catch(() => null)]);
+  const lean = nr?.lean || {};
+  const ev = lean.ev;
+  const manualOn = sw(s.manual) === "on";
+  const since = lean.manualSince || (manualOn && s.manual ? Date.parse(s.manual.last_changed) : null);
+  const week = nr?.week || {};
+  const bs = nr?.backup || {};
+  res.json({
+    ts: Date.now(),
+    tank: num(s.tank) ?? (Number.isFinite(lean.tank) ? lean.tank : null),
+    flow: num(s.flow),
+    tds: num(s.tds),
+    volts: num(s.volts),
+    main: { state: sw(s.pump), watts: num(s.watts) },
+    valve: sw(s.valve),
+    sub: { state: sw(s.sub), watts: num(s.subWatts), autoOffMin: num(s.subAutoOff) },
+    manual: { on: manualOn, since: manualOn ? since : null, until: manualOn && since ? since + 90 * 60000 : null },
+    ctrl: {
+      phase: lean.phase || null,
+      sub: lean.sub || null,
+      event: ev ? {
+        id: ev.id, kind: ev.kind, openedAt: ev.openedAt, mode: ev.mode || null, tankStart: ev.tankStart ?? null, tankMax: ev.tankMax ?? null,
+        runs: ev.runs || 0, runMin: Math.round((ev.runMs || 0) / 60000), tdsMin: ev.tdsMin ?? null, tdsMax: ev.tdsMax ?? null, peakFlow: ev.peakFlow ?? null,
+      } : null,
+      lastStop: lean.stopCause ? { at: lean.stopCause.at, reason: lean.stopCause.reason } : null,
+      online: Boolean(nr && Date.now() - (lean.lastTick || 0) < 120000),
+    },
+    week: { window: week.window || null, lastSupply: week.lastSupply || null, next: week.next ? { date: week.next.date, label: week.next.label, p: week.next.p } : null, days: week.days || [] },
+    backup: { running: bs.running || null, rate: bs.rate || 0.67, hoursLeft: bs.hoursLeft ?? null, nextAt: bs.nextAt ?? null, cfg: { ...DEFAULT_CFG, ...(nr?.cfg || {}) } },
+    seen: { tank: seen(s.tank), flow: seen(s.flow), tds: seen(s.tds) },
+  });
 });
 
-app.get("/live", (req, res) => {
-  res.send(page("Live", `
-<h1>Water system</h1><div class="sub">Live · updates every 5 s · <span id="ts">loading…</span></div>
-<div class="grid">
- <div class="card"><div class="lbl">Tank</div><div class="val" id="tank">-</div><div class="bar"><div id="tankbar" style="width:0"></div></div></div>
- <div class="card"><div class="lbl">Pump</div><div class="val" id="pump">-</div><div class="lbl" id="watts"></div></div>
- <div class="card"><div class="lbl">Drain valve</div><div class="val" id="valve">-</div></div>
- <div class="card"><div class="lbl">Flow</div><div class="val" id="flow">-</div></div>
- <div class="card"><div class="lbl">TDS</div><div class="val" id="tds">-</div></div>
- <div class="card"><div class="lbl">Mains voltage</div><div class="val" id="volts">-</div></div>
-</div>`, `<script>
-const n = v => (v == null || isNaN(+v)) ? null : Math.round(+v * 10) / 10;
-const sw = (el, v) => { el.textContent = v == null ? "?" : v.toUpperCase(); el.className = "val " + (v === "on" ? "on" : "off"); };
-async function tick() {
+app.get("/api/v1/today", (req, res) => {
+  const since = midnight();
+  const first = q1("SELECT tank FROM readings WHERE ts >= ? AND tank IS NOT NULL ORDER BY ts ASC LIMIT 1", since);
+  res.json({
+    date: istDate(since),
+    tankMidnight: first ? first.tank : null,
+    readings: bucket(q("SELECT ts, tank, flow, tds, pump_w FROM readings WHERE ts >= ? ORDER BY ts", since), 400),
+    runs: q("SELECT * FROM pump_runs WHERE started_at >= ? OR ended_at >= ? OR ended_at IS NULL ORDER BY started_at", since, since),
+    backup: q("SELECT * FROM backup_runs WHERE end_at >= ? ORDER BY start_at", since),
+    probes: q("SELECT ts, good, activity FROM probes WHERE ts >= ? ORDER BY ts", since),
+    events: q("SELECT * FROM events WHERE opened_at >= ? OR closed_at >= ? OR closed_at IS NULL ORDER BY opened_at", since, since),
+  });
+});
+
+app.get("/api/v1/history", (req, res) => {
+  const hours = Math.min(Math.max(parseInt(req.query.hours) || 24, 1), 24 * 90);
+  const since = Date.now() - hours * H;
+  res.json({
+    hours,
+    points: bucket(q("SELECT ts, tank, flow, tds, pump_w FROM readings WHERE ts >= ? ORDER BY ts", since), 600),
+    runs: q("SELECT * FROM pump_runs WHERE ended_at >= ? OR ended_at IS NULL ORDER BY started_at", since),
+  });
+});
+
+app.get("/api/v1/events", (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days) || 56, 1), 365);
+  const since = Date.now() - days * 86400000, sinceDate = istDate(since);
+  res.json({
+    events: q("SELECT * FROM events WHERE opened_at >= ? ORDER BY opened_at DESC", since),
+    supply: q("SELECT date, supply_day, start_ist, max_flow FROM supply_history WHERE date >= ? ORDER BY date DESC", sinceDate),
+    daily: q("SELECT date, pump_minutes, fills_ok, fills_failed, kwh, tank_min, tank_max FROM daily_summary WHERE date >= ? ORDER BY date DESC", sinceDate),
+    backup: q("SELECT * FROM backup_runs WHERE start_at >= ? ORDER BY start_at DESC", since),
+  });
+});
+
+app.get("/api/v1/system", async (req, res) => {
+  const [s, nr] = await Promise.all([haStates({ flow: ENT.flow, tank: ENT.tank, pump: ENT.pump, sub: ENT.sub, volts: ENT.volts }), nodeRed("/water/state").catch(() => null)]);
+  const dev = (key, name, detail, st, limitMin) => {
+    const t = seen(st);
+    const state = !st || st.state === "unavailable" ? "down" : t && Date.now() - t > limitMin * 60000 ? "stale" : "ok";
+    return { key, name, detail, state, seen: t };
+  };
+  const lastAi = q1("SELECT MAX(ts) ts FROM ai_calls");
+  const ai = q1("SELECT COUNT(*) calls, SUM(outcome = 'ok') ok, AVG(latency_ms) avgMs FROM ai_calls WHERE ts >= ?", Date.now() - 24 * H) || {};
+  const tick = nr?.lean?.lastTick || null;
+  res.json({
+    devices: [
+      dev("esp-motor", "Pump-side sensors", "Flow, TDS and drain valve (ESP32)", s.flow, 15),
+      dev("esp-tank", "Tank level sensor", "Ultrasonic, three joined 2,000 L tanks (ESP32)", s.tank, 30),
+      dev("main-plug", "Main pump plug", `Tapo P110, 1.5 HP pump${num(s.volts) ? `, ${Math.round(num(s.volts))} V mains` : ""}`, s.pump, 60 * 24),
+      dev("sub-plug", "Submersible plug", "Tapo plug with its own 120 min auto-off", s.sub, 60 * 24),
+      { key: "controller", name: "Automatic controller", detail: "Node-RED, Controller v5", state: !nr ? "down" : tick && Date.now() - tick < 120000 ? "ok" : "stale", seen: tick },
+      { key: "ai", name: "AI assistant", detail: "FreeLLMAPI on the home server", state: lastAi?.ts && Date.now() - lastAi.ts < 3 * H ? "ok" : "stale", seen: lastAi?.ts || null },
+    ],
+    anomalies: q("SELECT id, kind, severity, opened_at, detail, explanation FROM ai_anomalies WHERE closed_at IS NULL AND (status IS NULL OR status NOT IN ('noise', 'closed')) ORDER BY opened_at DESC LIMIT 10"),
+    log: q("SELECT ts, topic, text FROM controller_log WHERE topic IS NULL OR topic NOT IN ('schedule', 'debug') ORDER BY ts DESC LIMIT 25"),
+    ai: { calls: ai.calls || 0, ok: ai.ok || 0, avgMs: ai.avgMs ? Math.round(ai.avgMs) : null },
+    db: {
+      readings: q1("SELECT COUNT(*) n FROM readings")?.n || 0,
+      events: q1("SELECT COUNT(*) n FROM events")?.n || 0,
+      since: q1("SELECT MIN(ts) t FROM readings")?.t || null,
+    },
+  });
+});
+
+app.get("/api/v1/settings", async (req, res) => {
+  try { const nr = await nodeRed("/water/state"); res.json({ backup: { ...DEFAULT_CFG, ...(nr.cfg || {}) } }); }
+  catch (e) { res.status(502).json({ error: `Can't reach the controller: ${e.message}` }); }
+});
+
+app.post("/api/v1/settings", async (req, res) => {
+  const b = req.body?.backup || {};
+  const cfg = {};
+  const lim = { startBelow: [5, 50], leaveAtSupply: [5, 60], maxTarget: [20, 90], minHoursAway: [1, 48], maxRunMin: [10, 110] };
+  for (const [k, [lo, hi]] of Object.entries(lim)) {
+    if (b[k] == null) continue;
+    const v = Number(b[k]);
+    if (!Number.isFinite(v) || v < lo || v > hi) return res.status(400).json({ error: `${k} must be between ${lo} and ${hi}` });
+    cfg[k] = Math.round(v);
+  }
+  try { const out = await nodeRed("/water/settings", cfg); res.json({ backup: { ...DEFAULT_CFG, ...out.cfg } }); }
+  catch (e) { res.status(502).json({ error: `Can't reach the controller: ${e.message}` }); }
+});
+
+app.post("/api/v1/control", async (req, res) => {
+  const { target, on } = req.body || {};
+  const entity = CONTROL[target];
+  if (!entity || typeof on !== "boolean") return res.status(400).json({ error: "Unknown control" });
   try {
-    const d = await (await fetch("/api/live")).json();
-    const t = n(d.tank);
-    document.getElementById("tank").textContent = t == null ? "?" : t + "%";
-    document.getElementById("tankbar").style.width = Math.max(0, Math.min(100, t || 0)) + "%";
-    sw(document.getElementById("pump"), d.pump);
-    sw(document.getElementById("valve"), d.valve);
-    document.getElementById("watts").textContent = n(d.watts) == null ? "" : n(d.watts) + " W";
-    document.getElementById("flow").textContent = n(d.flow) == null ? "?" : n(d.flow) + " L/min";
-    document.getElementById("tds").textContent = n(d.tds) == null ? "?" : Math.round(d.tds) + " ppm";
-    document.getElementById("volts").textContent = n(d.volts) == null ? "?" : Math.round(d.volts) + " V";
-    document.getElementById("ts").textContent = new Date(d.ts).toLocaleTimeString();
-  } catch (e) { document.getElementById("ts").textContent = "can't reach server"; }
-}
-tick(); setInterval(tick, 5000);
-</script>`));
+    if ((target === "pump" || target === "valve") && on) {
+      const m = await haState(ENT.manual);
+      if (sw(m) !== "on") return res.status(409).json({ error: "Turn on manual control first" });
+    }
+    await haCall(entity.split(".")[0], on ? "turn_on" : "turn_off", entity);
+    console.log(new Date().toISOString(), "control", target, on ? "on" : "off");
+    res.json({ ok: true });
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-// ---------- history charts ----------
-function history(hours) {
-  const since = Date.now() - hours * 3600000;
-  return db.prepare("SELECT ts, tank, pump_w, tds FROM readings WHERE ts >= ? ORDER BY ts").all(since);
-}
-
+// ---------- older JSON endpoints, kept for existing scripts ----------
+app.get("/api/tables", (req, res) => res.json(q("SELECT name FROM sqlite_master WHERE type='table'").map((t) => t.name)));
+app.get("/api/table/:name", (req, res) => {
+  const names = q("SELECT name FROM sqlite_master WHERE type='table'").map((t) => t.name);
+  if (!names.includes(req.params.name)) return res.status(404).json({ error: "no such table" });
+  const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+  res.json(q(`SELECT * FROM "${req.params.name}" ORDER BY rowid DESC LIMIT ?`, limit));
+});
+app.get("/api/live", async (req, res) => {
+  const s = await haStates({ tank: ENT.tank, flow: ENT.flow, tds: ENT.tds, pump: ENT.pump, valve: ENT.valve, watts: ENT.watts, volts: ENT.volts });
+  res.json({ ...Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v ? v.state : null])), ts: Date.now() });
+});
 app.get("/api/history", (req, res) => {
   const hours = Math.min(Math.max(parseInt(req.query.hours) || 24, 1), 24 * 30);
-  res.json(history(hours));
+  res.json(q("SELECT ts, tank, pump_w, tds FROM readings WHERE ts >= ? ORDER BY ts", Date.now() - hours * H));
 });
+app.get("/api/health", (req, res) => res.json({ ok: true, version: "1.0.0", web: fs.existsSync(path.join(WEB_DIR, "index.html")) }));
 
-function chart(rows, key, { color, unit, min, max, w = 480, h = 220 }) {
-  const pad = { l: 52, r: 8, t: 10, b: 26 };
-  const pts = rows.filter(r => r[key] != null);
-  if (pts.length < 2) return `<div class="off">Not enough data</div>`;
-  const t0 = pts[0].ts, t1 = pts[pts.length - 1].ts;
-  const vals = pts.map(r => r[key]);
-  const lo = min ?? Math.min(...vals), hi = max ?? Math.max(...vals, lo + 1);
-  const X = t => pad.l + ((t - t0) / (t1 - t0 || 1)) * (w - pad.l - pad.r);
-  const Y = v => pad.t + (1 - (v - lo) / (hi - lo || 1)) * (h - pad.t - pad.b);
-  const line = pts.map((r, i) => `${i ? "L" : "M"}${X(r.ts).toFixed(1)},${Y(r[key]).toFixed(1)}`).join("");
-  const grid = [0, 0.25, 0.5, 0.75, 1].map(f => {
-    const v = lo + f * (hi - lo), y = Y(v).toFixed(1);
-    return `<line x1="${pad.l}" x2="${w - pad.r}" y1="${y}" y2="${y}" stroke="#2a3540"/>
-<text x="${pad.l - 6}" y="${+y + 4}" fill="#8a96a3" font-size="13" text-anchor="end">${Math.round(v)}${unit}</text>`;
-  }).join("");
-  const span = t1 - t0, ticks = 4;
-  const xl = Array.from({ length: ticks + 1 }, (_, i) => {
-    const t = t0 + (span * i) / ticks, d = new Date(t + IST).toISOString();
-    const label = span > 2 * 86400000 ? d.slice(5, 10) : d.slice(11, 16);
-    return `<text x="${X(t).toFixed(1)}" y="${h - 6}" fill="#8a96a3" font-size="13" text-anchor="${i === 0 ? "start" : i === ticks ? "end" : "middle"}">${label}</text>`;
-  }).join("");
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" role="img">${grid}${xl}
-<path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/></svg>`;
-}
+// Old page addresses now open the matching app screen.
+for (const [from, to] of [["/live", "overview"], ["/today", "overview"], ["/history", "trends"]]) app.get(from, (req, res) => res.redirect(`/#/${to}`));
 
-app.get("/history", (req, res) => {
-  const hours = Math.min(Math.max(parseInt(req.query.hours) || 24, 1), 24 * 30);
-  const rows = history(hours);
-  const pick = [[24, "24 hours"], [72, "3 days"], [168, "7 days"], [720, "30 days"]]
-    .map(([h, l]) => h === hours ? `<b>${l}</b>` : `<a href="/history?hours=${h}">${l}</a>`).join(" · ");
-  res.send(page("History", `
-<h1>History</h1><div class="sub">${pick}</div>
-<div class="card"><div class="lbl">Tank level</div>${chart(rows, "tank", { color: "#38bdf8", unit: "%", min: 0, max: 100 })}</div>
-<div class="card" style="margin-top:10px"><div class="lbl">Pump power</div>${chart(rows, "pump_w", { color: "#4ade80", unit: " W", min: 0 })}</div>
-<div class="card" style="margin-top:10px"><div class="lbl">TDS</div>${chart(rows, "tds", { color: "#fbbf24", unit: "", min: 0 })}</div>`));
+// ---------- web app ----------
+app.use(express.static(WEB_DIR, { index: "index.html", maxAge: "1h", setHeaders: (res, p) => { if (p.endsWith("index.html")) res.set("Cache-Control", "no-cache"); } }));
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  const f = path.join(WEB_DIR, "index.html");
+  if (fs.existsSync(f)) return res.sendFile(f);
+  res.status(503).send("The web app isn't installed yet. Expected it in " + WEB_DIR);
 });
+app.use("/api", (req, res) => res.status(404).json({ error: "No such endpoint" }));
 
-app.listen(3000, () => console.log(`Water API on port 3000${PASSWORD ? " (login on)" : " (no password set)"}`));
+app.listen(3000, () => console.log(`Water API 1.0 on port 3000${PASSWORD ? " (login on)" : " (no password set)"}; web from ${WEB_DIR}`));

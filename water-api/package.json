@@ -1,12 +1,15 @@
 {
   "name": "water-api",
-  "version": "0.3.2",
-  "description": "Read-only web API and phone dashboard for the water supply storage solution",
+  "version": "1.0.0",
+  "description": "Web app and API for the residential water supply storage solution",
   "main": "server.js",
   "license": "MIT",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:web": "npm --prefix web ci && npm --prefix web run build"
   },
-  "dependencies": { "express": "^4.21.0" }
+  "dependencies": {
+    "express": "^4.21.0"
+  }
 }

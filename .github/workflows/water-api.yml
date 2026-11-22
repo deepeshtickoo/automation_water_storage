@@ -20,8 +20,24 @@ jobs:
       - run: npm install
       - run: npm test
 
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: water-api/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Type-check and build
+        run: npm run build
+      - name: Built app matches the committed copy
+        run: git diff --stat --exit-code -- ../public || (echo "Run npm run build in water-api/web and commit public/"; exit 1)
+
   docker:
-    needs: test
+    needs: [test, web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
