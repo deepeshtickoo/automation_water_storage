@@ -54,7 +54,7 @@ before(async () => {
   server = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
     env: {
       ...process.env, WATER_DB: dbPath, WATER_WEB: webDir, WATER_USERNAME: "tester", WATER_PASSWORD: "test-pass",
-      WATER_SECRETS: path.join(dir, "none.json"), SUPERVISOR_TOKEN: "x",
+      WATER_STATE: path.join(dir, "none.json"), SUPERVISOR_TOKEN: "x",
     },
     stdio: "ignore",
   });

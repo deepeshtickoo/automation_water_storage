@@ -31,15 +31,16 @@ The front end is React with TypeScript, built with Vite. The back end is Node.js
 
 ```
  ESP32 sensors ─┐
- Tapo plugs ────┼─> Home Assistant ──┐
-                │                    ├─> Water API (this app) ──> browser
- Node-RED controller ──> water.db ───┤      React app + JSON API
-        └── /endpoint/water/* ───────┘
+ Tapo plugs ────┴─> Home Assistant ─────────┐
+                                            ├─> Water API (this app) ──> browser
+ Node-RED controller ─┬─> water.db ─────────┤      React app + JSON API
+                      └─> water-state.json ─┘
 ```
 
 - **water.db** is the controller's SQLite database. The app opens it read-only, from a read-only mount; Node-RED stays the only writer.
 - **Home Assistant** supplies live states and does the switching, through the Supervisor API (`homeassistant_api: true`), so no long-lived token is stored.
-- **Node-RED** exposes the controller's own state (current phase, open supply event, the 7-day forecast, the top-up state) and accepts top-up settings, on two small HTTP endpoints. Their login lives in `/share/water-api.secrets.json`, outside the repository.
+- **Node-RED** writes the controller's own state (current phase, open supply event, the 7-day forecast, the top-up state) to `/share/water-state.json` every 5 seconds. The app treats it as missing once it is two minutes old.
+- **Settings** saved in the app go into a Home Assistant text helper (`input_text.water_backup_settings`). Node-RED watches it, checks the values again and applies them. No passwords or tokens are shared between the apps.
 
 ## JSON API
 

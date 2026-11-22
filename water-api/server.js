@@ -1,7 +1,7 @@
 // Water API 1.0: the residential water supply storage console.
 // Serves the React app (WEB_DIR) and a JSON API built from three sources:
-//   water.db (read-only, written by Node-RED), Home Assistant (live states, switching),
-//   and Node-RED's controller state (http endpoints on the Node-RED app).
+//   water.db (read-only, written by Node-RED), Home Assistant (live states, switching, settings),
+//   and the controller state Node-RED writes to /share/water-state.json every 5 seconds.
 const express = require("express");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -11,7 +11,7 @@ const { DatabaseSync } = require("node:sqlite");
 const DB_PATH = process.env.WATER_DB || "/addon_configs/a0d7b954_nodered/node-red/water.db";
 // The web app: a newer copy in /share wins over the one baked into the image.
 const WEB_DIR = process.env.WATER_WEB || ["/share/water-web", path.join(__dirname, "public")].find((d) => fs.existsSync(path.join(d, "index.html"))) || path.join(__dirname, "public");
-const SECRETS = process.env.WATER_SECRETS || "/share/water-api.secrets.json";
+const STATE_FILE = process.env.WATER_STATE || "/share/water-state.json";
 const HA = "http://supervisor/core/api";
 const IST = 330 * 60000;
 const H = 3600000;
@@ -29,9 +29,6 @@ try {
   USERNAME = opts.username || USERNAME;
   PASSWORD = opts.password || PASSWORD;
 } catch {}
-// Node-RED http endpoint login (kept out of the repo, in /share).
-let NR = { url: "http://172.30.32.1:1880/endpoint", user: "", pass: "" };
-try { NR = { ...NR, ...JSON.parse(fs.readFileSync(SECRETS, "utf8")).nodered }; } catch {}
 
 // ---------- login ----------
 const same = (a, b) => {
@@ -62,6 +59,7 @@ const ENT = {
   subWatts: "sensor.random_smart_socket_current_consumption",
   subAutoOff: "number.random_smart_socket_turn_off_in",
   manual: "input_boolean.water_manual_control",
+  settings: "input_text.water_backup_settings",
 };
 const CONTROL = {
   pump: ENT.pump,
@@ -82,21 +80,16 @@ async function haStates(map) {
   await Promise.all(Object.entries(map).map(async ([k, id]) => (out[k] = await haState(id))));
   return out;
 }
-async function haCall(domain, service, entity_id) {
-  const r = await fetch(`${HA}/services/${domain}/${service}`, { method: "POST", headers: haHeaders(), body: JSON.stringify({ entity_id }), signal: AbortSignal.timeout(8000) });
+async function haCall(domain, service, entity_id, data = {}) {
+  const r = await fetch(`${HA}/services/${domain}/${service}`, { method: "POST", headers: haHeaders(), body: JSON.stringify({ entity_id, ...data }), signal: AbortSignal.timeout(8000) });
   if (!r.ok) throw new Error(`Home Assistant said ${r.status}`);
 }
-async function nodeRed(pathname, body) {
-  const auth = NR.user ? { Authorization: "Basic " + Buffer.from(`${NR.user}:${NR.pass}`).toString("base64") } : {};
-  const r = await fetch(NR.url + pathname, {
-    method: body ? "POST" : "GET",
-    headers: { ...auth, ...(body ? { "Content-Type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(5000),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || `Node-RED said ${r.status}`);
-  return j;
+/** Controller state that Node-RED writes every 5 seconds. Null when missing or older than 2 minutes. */
+async function controllerState() {
+  try {
+    const j = JSON.parse(await fs.promises.readFile(STATE_FILE, "utf8"));
+    return Date.now() - (j.at || 0) < 120000 ? j : null;
+  } catch { return null; }
 }
 const num = (s) => (s && s.state !== "unavailable" && s.state !== "unknown" && s.state !== "" && Number.isFinite(+s.state) ? +s.state : null);
 const sw = (s) => (s && (s.state === "on" || s.state === "off") ? s.state : null);
@@ -129,7 +122,7 @@ const DEFAULT_CFG = { startBelow: 20, leaveAtSupply: 25, maxTarget: 50, minHours
 
 // ---------- v1 API (used by the web app) ----------
 app.get("/api/v1/now", async (req, res) => {
-  const [s, nr] = await Promise.all([haStates(ENT), nodeRed("/water/state").catch(() => null)]);
+  const [s, nr] = await Promise.all([haStates(ENT), controllerState()]);
   const lean = nr?.lean || {};
   const ev = lean.ev;
   const manualOn = sw(s.manual) === "on";
@@ -198,7 +191,7 @@ app.get("/api/v1/events", (req, res) => {
 });
 
 app.get("/api/v1/system", async (req, res) => {
-  const [s, nr] = await Promise.all([haStates({ flow: ENT.flow, tank: ENT.tank, pump: ENT.pump, sub: ENT.sub, volts: ENT.volts }), nodeRed("/water/state").catch(() => null)]);
+  const [s, nr] = await Promise.all([haStates({ flow: ENT.flow, tank: ENT.tank, pump: ENT.pump, sub: ENT.sub, volts: ENT.volts }), controllerState()]);
   const dev = (key, name, detail, st, limitMin) => {
     const t = seen(st);
     const state = !st || st.state === "unavailable" ? "down" : t && Date.now() - t > limitMin * 60000 ? "stale" : "ok";
@@ -228,8 +221,9 @@ app.get("/api/v1/system", async (req, res) => {
 });
 
 app.get("/api/v1/settings", async (req, res) => {
-  try { const nr = await nodeRed("/water/state"); res.json({ backup: { ...DEFAULT_CFG, ...(nr.cfg || {}) } }); }
-  catch (e) { res.status(502).json({ error: `Can't reach the controller: ${e.message}` }); }
+  const nr = await controllerState();
+  if (!nr) return res.status(503).json({ error: "The automatic controller isn't reporting right now" });
+  res.json({ backup: { ...DEFAULT_CFG, ...(nr.cfg || {}) } });
 });
 
 app.post("/api/v1/settings", async (req, res) => {
@@ -242,8 +236,13 @@ app.post("/api/v1/settings", async (req, res) => {
     if (!Number.isFinite(v) || v < lo || v > hi) return res.status(400).json({ error: `${k} must be between ${lo} and ${hi}` });
     cfg[k] = Math.round(v);
   }
-  try { const out = await nodeRed("/water/settings", cfg); res.json({ backup: { ...DEFAULT_CFG, ...out.cfg } }); }
-  catch (e) { res.status(502).json({ error: `Can't reach the controller: ${e.message}` }); }
+  // Node-RED watches this helper, checks the values again and applies them.
+  try {
+    const nr = await controllerState();
+    const merged = { ...DEFAULT_CFG, ...(nr?.cfg || {}), ...cfg };
+    await haCall("input_text", "set_value", ENT.settings, { value: JSON.stringify(merged) });
+    res.json({ backup: merged });
+  } catch (e) { res.status(502).json({ error: `Couldn't save: ${e.message}` }); }
 });
 
 app.post("/api/v1/control", async (req, res) => {
