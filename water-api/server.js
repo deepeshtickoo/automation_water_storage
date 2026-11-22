@@ -192,9 +192,10 @@ app.get("/api/v1/events", (req, res) => {
 
 app.get("/api/v1/system", async (req, res) => {
   const [s, nr] = await Promise.all([haStates({ flow: ENT.flow, tank: ENT.tank, pump: ENT.pump, sub: ENT.sub, volts: ENT.volts }), controllerState()]);
+  // Sensors report every few seconds, so silence means trouble. Plugs only report on change, so only "unavailable" counts.
   const dev = (key, name, detail, st, limitMin) => {
     const t = seen(st);
-    const state = !st || st.state === "unavailable" ? "down" : t && Date.now() - t > limitMin * 60000 ? "stale" : "ok";
+    const state = !st || st.state === "unavailable" ? "down" : limitMin && t && Date.now() - t > limitMin * 60000 ? "stale" : "ok";
     return { key, name, detail, state, seen: t };
   };
   const lastAi = q1("SELECT MAX(ts) ts FROM ai_calls");
@@ -205,7 +206,7 @@ app.get("/api/v1/system", async (req, res) => {
       dev("esp-motor", "Pump-side sensors", "Flow, TDS and drain valve (ESP32)", s.flow, 15),
       dev("esp-tank", "Tank level sensor", "Ultrasonic, three joined 2,000 L tanks (ESP32)", s.tank, 30),
       dev("main-plug", "Main pump plug", `Tapo P110, 1.5 HP pump${num(s.volts) ? `, ${Math.round(num(s.volts))} V mains` : ""}`, s.pump, 60 * 24),
-      dev("sub-plug", "Submersible plug", "Tapo plug with its own 120 min auto-off", s.sub, 60 * 24),
+      dev("sub-plug", "Submersible plug", "Tapo plug with its own 120 min auto-off", s.sub, 0),
       { key: "controller", name: "Automatic controller", detail: "Node-RED, Controller v5", state: !nr ? "down" : tick && Date.now() - tick < 120000 ? "ok" : "stale", seen: tick },
       { key: "ai", name: "AI assistant", detail: "FreeLLMAPI on the home server", state: lastAi?.ts && Date.now() - lastAi.ts < 3 * H ? "ok" : "stale", seen: lastAi?.ts || null },
     ],

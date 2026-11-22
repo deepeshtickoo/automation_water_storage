@@ -90,7 +90,7 @@ export function Overview({ now }: { now: Now | null }) {
             <div className="faint small">Mains {num(now.volts)} V{now.ctrl.lastStop ? `. Last stop ${t12(now.ctrl.lastStop.at)}` : ''}</div>
           </div>
           <div className="eq">
-            <div className="eq-top"><span className="eq-name">Incoming water</span><Pill tone={now.flow && now.flow > 1 ? 'live' : 'quiet'}>{now.flow && now.flow > 1 ? 'Flowing' : 'No flow'}</Pill></div>
+            <div className="eq-top"><span className="eq-name">Incoming water</span><Pill tone={(now.flow ?? 0) >= 10 ? 'live' : 'quiet'}>{(now.flow ?? 0) >= 10 ? 'Flowing' : 'No flow'}</Pill></div>
             <div className="eq-val num">{num(now.flow)}<small>L/min</small></div>
             <div className="faint small">TDS {num(now.tds)} ppm{now.main.state === 'on' ? (now.tds != null && now.tds < 200 ? ', clean' : ', check quality') : ', idle reading'}</div>
           </div>
