@@ -2,6 +2,10 @@
 
 Published automatically from the live Node-RED instance.
 
+## v1.2.6 (2026-11-22)
+
+Nightly sync: changes in Water System.
+
 ## v1.2.5 (2026-11-20)
 
 Nightly sync: changes in Water System.

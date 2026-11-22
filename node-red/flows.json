@@ -201,7 +201,7 @@
     "y": 520,
     "wires": [
       [
-        "wu-mail-fn"
+        "bk-mail"
       ]
     ]
   },
@@ -3151,7 +3151,8 @@
     "id": "wt-notify-in",
     "links": [
       "wl-link-tg",
-      "gs-link-tg"
+      "gs-link-tg",
+      "bk-link-tg"
     ],
     "name": "live updates in",
     "type": "link in",
@@ -3699,6 +3700,370 @@
     ],
     "x": 700,
     "y": 2600,
+    "z": "wu-tab"
+  },
+  {
+    "id": "bk-sec",
+    "info": "",
+    "name": "BACKUP TOP-UP: submersible pump fills only what the house will use until the next supply (added 22 Nov 2026)",
+    "type": "comment",
+    "wires": [],
+    "x": 520,
+    "y": 5300,
+    "z": "wu-tab"
+  },
+  {
+    "crontab": "",
+    "id": "bk-tick",
+    "name": "Backup check every 60 s",
+    "once": true,
+    "onceDelay": "30",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "60",
+    "topic": "tick",
+    "type": "inject",
+    "wires": [
+      [
+        "bk-fn"
+      ]
+    ],
+    "x": 200,
+    "y": 5360,
+    "z": "wu-tab"
+  },
+  {
+    "entities": {
+      "entity": [
+        "switch.random_smart_socket",
+        "sensor.random_smart_socket_current_consumption",
+        "binary_sensor.random_smart_socket_overloaded"
+      ],
+      "regex": [],
+      "substring": []
+    },
+    "entityidfiltertype": "list",
+    "exposeAsEntityConfig": "",
+    "for": "0",
+    "forType": "num",
+    "forUnits": "seconds",
+    "id": "bk-ha",
+    "ifState": "",
+    "ifStateOperator": "is",
+    "ifStateType": "str",
+    "ignoreCurrentStateUnavailable": false,
+    "ignoreCurrentStateUnknown": false,
+    "ignorePrevStateNull": false,
+    "ignorePrevStateUnavailable": false,
+    "ignorePrevStateUnknown": false,
+    "name": "Submersible plug: switch, watts, overload",
+    "outputInitially": true,
+    "outputOnlyOnStateChange": true,
+    "outputProperties": [
+      {
+        "property": "payload",
+        "propertyType": "msg",
+        "value": "",
+        "valueType": "entityState"
+      },
+      {
+        "property": "topic",
+        "propertyType": "msg",
+        "value": "",
+        "valueType": "triggerId"
+      }
+    ],
+    "outputs": 1,
+    "server": "7e55f602.47a88",
+    "stateType": "str",
+    "type": "server-state-changed",
+    "version": 6,
+    "wires": [
+      [
+        "bk-fn"
+      ]
+    ],
+    "x": 230,
+    "y": 5420,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "// Backup top-up (submersible pump), added 22 Nov 2026.\n// Tops the tanks up from the submersible only when the tank is low and the next municipal supply is far away,\n// and only enough to last until that supply (so the tanks are near 25% when fresh water arrives).\n// Outputs: 1 = switch actions, 2 = text to Telegram owner + dashboard log, 3 = database (water.db).\nconst CFG = {\n  plug: 'switch.random_smart_socket',\n  startBelow: 20,      // % tank: start when below this\n  leaveAtSupply: 25,   // % tank: what should be left when supply arrives\n  maxTarget: 50,       // % tank: never fill above this\n  minHoursAway: 6,     // only if next supply is at least this far away\n  maxRunMin: 60,       // hard stop per run\n  riseCheckMin: 10,    // must rise...\n  riseMinPct: 1,       // ...at least this much every 10 min\n  minWatts: 20,        // below this after 45 s = not pumping\n  cooldownMin: 120,    // wait after a failed run\n  defaultRate: 0.67,   // % per hour, until learned from data\n};\n// Settings saved from the web app (Water API -> /endpoint/water/settings) override the defaults.\nconst over = global.get('waterBackupCfg') || {};\nfor (const k of ['startBelow', 'leaveAtSupply', 'maxTarget', 'minHoursAway', 'maxRunMin']) if (Number.isFinite(over[k])) CFG[k] = over[k];\nconst now = Date.now();\nconst bk = flow.get('backupTopup') || { running: null, plug: {}, samples: [], lastFailAt: 0, rate: CFG.defaultRate };\nbk.plug = bk.plug || {}; bk.samples = bk.samples || [];\n\n// Plug state updates from the state node\nif (msg.topic && msg.topic.indexOf('random_smart_socket') >= 0) {\n  bk.plug[msg.topic] = { v: msg.payload, t: now };\n  flow.set('backupTopup', bk);\n  return null;\n}\nif (msg.topic !== 'tick') return null;\n\nconst s = global.get('waterLeanState') || {};\nconst ww = global.get('waterWeek') || {};\nconst istDate = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(ms));\nconst t12 = (ms) => new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(ms)).replace(/ /g, ' ');\nconst hm = (m) => (m >= 60 ? Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm' : m + 'm');\nconst tank = Number(s.tank);\nconst tankFresh = Number.isFinite(tank) && s.lastSeen && now - Number(s.lastSeen.tank || 0) < 20 * 60000;\nconst plugState = (bk.plug[CFG.plug] || {}).v;\nconst watts = Number((bk.plug['sensor.random_smart_socket_current_consumption'] || {}).v);\nconst overloaded = (bk.plug['binary_sensor.random_smart_socket_overloaded'] || {}).v === 'on';\nconst mainBusy = s.pump === 'on' || s.valve === 'on' || s.manual === true || Boolean(s.fe) || Boolean(s.ev && now - Number(s.ev.lastActivityAt || 0) < 30 * 60000);\n\n// Learn the usage rate: tank drop per hour over quiet half-hours (no pump of any kind) in the last 3 days\nconst quiet = !mainBusy && plugState !== 'on' && !bk.running;\nconst last = bk.samples[bk.samples.length - 1];\nif (tankFresh && (!last || now - last.t >= 30 * 60000)) {\n  bk.samples.push({ t: now, v: tank, q: quiet });\n  bk.samples = bk.samples.filter((x) => now - x.t < 3 * 86400000);\n} else if (last && !quiet) last.q = false; // mark the open half-hour as disturbed\nlet dropSum = 0, hrs = 0;\nfor (let i = 1; i < bk.samples.length; i++) {\n  const a = bk.samples[i - 1], b = bk.samples[i];\n  const h = (b.t - a.t) / 3600000;\n  if (a.q && b.q && h > 0.3 && h < 1.5 && b.v <= a.v + 0.5) { dropSum += Math.max(0, a.v - b.v); hrs += h; }\n}\nif (hrs >= 12) bk.rate = Math.min(1.5, Math.max(0.3, dropSum / hrs));\n\n// Next municipal supply start (from the 7-day forecast)\nlet nextAt = null;\nif (ww.next && ww.next.date) {\n  let mins = 12 * 60;\n  const m = /^(\\d{1,2}):(\\d{2}) (AM|PM)/.exec(String(ww.window || ''));\n  if (m) mins = (Number(m[1]) % 12 + (m[3] === 'PM' ? 12 : 0)) * 60 + Number(m[2]);\n  nextAt = Date.parse(ww.next.date + 'T00:00:00+05:30') + mins * 60000;\n}\nconst hoursLeft = nextAt ? (nextAt - now) / 3600000 : null;\n\nconst out1 = [], out2 = [], out3 = [];\nconst cmd = (a) => out1.push({ payload: { action: 'switch.' + a, target: { entity_id: [CFG.plug] } } });\nconst say = (t) => out2.push({ topic: 'backup', payload: t });\nconst q = (v) => (v == null ? 'NULL' : typeof v === 'number' ? String(Math.round(v * 10) / 10) : \"'\" + String(v).replace(/'/g, \"''\") + \"'\");\n\nfunction stop(reason, failed) {\n  const r = bk.running;\n  cmd('turn_off');\n  const mins = Math.round((now - r.startAt) / 60000);\n  const end = Number.isFinite(tank) ? tank : r.lastTank;\n  say('Backup top-up stopped: ' + reason + '. Tank ' + Math.round(r.startTank) + '% to ' + Math.round(end) + '%, ran ' + hm(mins) + '.');\n  out3.push({ topic: 'INSERT INTO backup_runs (start_at, end_at, tank_start, tank_end, target, minutes, reason, failed) VALUES (' +\n    [r.startAt, now, r.startTank, end, r.target, mins, reason, failed ? 1 : 0].map(q).join(', ') + ')' });\n  const day = istDate(now);\n  const today = global.get('waterBackup') || {};\n  if (today.date !== day) { today.date = day; today.runs = []; }\n  today.runs.push({ from: Math.round(r.startTank), to: Math.round(end), min: mins, reason });\n  global.set('waterBackup', today);\n  if (failed) bk.lastFailAt = now;\n  bk.running = null;\n}\n\nif (bk.running) {\n  const r = bk.running;\n  const runMin = (now - r.startAt) / 60000;\n  if (Number.isFinite(tank)) r.lastTank = tank;\n  if (plugState === 'off' && runMin > 1) { stop('pump switched off outside the controller', false); }\n  else if (overloaded) stop('plug reports overload', true);\n  else if (mainBusy) stop('main pump or supply is active', false);\n  else if (tankFresh && tank >= r.target) stop('target ' + Math.round(r.target) + '% reached', false);\n  else if (runMin >= CFG.maxRunMin) stop('hit the ' + CFG.maxRunMin + ' min limit', true);\n  else if (!tankFresh && runMin > 2) stop('tank reading went stale', true);\n  else if (runMin > 0.75 && Number.isFinite(watts) && watts < CFG.minWatts) stop('no power draw (' + Math.round(watts) + ' W)', true);\n  else if (now - r.checkAt >= CFG.riseCheckMin * 60000) {\n    if (tank - r.checkTank < CFG.riseMinPct) stop('tank not rising (dry or no water)', true);\n    else { r.checkAt = now; r.checkTank = tank; }\n  } else if (plugState !== 'on' && runMin < 1 && now - r.cmdAt > 20000) { cmd('turn_on'); r.cmdAt = now; }\n} else if (tankFresh && tank < CFG.startBelow && hoursLeft !== null && hoursLeft >= CFG.minHoursAway &&\n           !mainBusy && plugState === 'off' && !overloaded && now - (bk.lastFailAt || 0) >= CFG.cooldownMin * 60000) {\n  const target = Math.min(CFG.maxTarget, CFG.leaveAtSupply + hoursLeft * bk.rate);\n  if (target > tank + 2) {\n    bk.running = { startAt: now, cmdAt: now, startTank: tank, lastTank: tank, target, checkAt: now, checkTank: tank };\n    cmd('turn_on');\n    say('Backup top-up started: tank ' + Math.round(tank) + '%, next supply ' + t12(nextAt) + ' (' + Math.round(hoursLeft) + 'h away). Filling to ' + Math.round(target) + '% with the submersible.');\n  }\n}\n\nglobal.set('waterBackupState', { at: now, running: bk.running, rate: Math.round(bk.rate * 100) / 100, learnedHours: Math.round(hrs), hoursLeft: hoursLeft == null ? null : Math.round(hoursLeft * 10) / 10, nextAt, tank: Number.isFinite(tank) ? Math.round(tank) : null, plug: plugState || 'unknown', watts: Number.isFinite(watts) ? watts : null });\nflow.set('backupTopup', bk);\nnode.status(bk.running ? { fill: 'blue', shape: 'dot', text: 'filling to ' + Math.round(bk.running.target) + '%' }\n  : { fill: 'grey', shape: 'ring', text: 'idle | tank ' + (Number.isFinite(tank) ? Math.round(tank) : '?') + '% | next supply ' + (hoursLeft == null ? '?' : Math.round(hoursLeft) + 'h') + ' | ' + Math.round(bk.rate * 100) / 100 + '%/h' });\nreturn [out1.length ? out1 : null, out2.length ? out2 : null, out3.length ? out3 : null];\n",
+    "id": "bk-fn",
+    "initialize": "",
+    "libs": [],
+    "name": "Backup top-up: start below 20%, fill to 25% + use until next supply",
+    "noerr": 0,
+    "outputs": 3,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      [
+        "bk-action"
+      ],
+      [
+        "bk-link-tg"
+      ],
+      [
+        "bk-db"
+      ]
+    ],
+    "x": 620,
+    "y": 5390,
+    "z": "wu-tab"
+  },
+  {
+    "action": "switch.turn_off",
+    "areaId": [],
+    "blockInputOverrides": false,
+    "data": "{}",
+    "dataType": "json",
+    "debugenabled": false,
+    "deviceId": [],
+    "entityId": [],
+    "floorId": [],
+    "id": "bk-action",
+    "labelId": [],
+    "mergeContext": "",
+    "mustacheAltTags": false,
+    "name": "Submersible pump on/off",
+    "outputProperties": [],
+    "queue": "none",
+    "server": "7e55f602.47a88",
+    "type": "api-call-service",
+    "version": 7,
+    "wires": [
+      []
+    ],
+    "x": 1000,
+    "y": 5340,
+    "z": "wu-tab"
+  },
+  {
+    "id": "bk-link-tg",
+    "links": [
+      "wt-notify-in"
+    ],
+    "mode": "link",
+    "name": "backup notes to Telegram + dashboard log",
+    "type": "link out",
+    "wires": [],
+    "x": 1000,
+    "y": 5390,
+    "z": "wu-tab"
+  },
+  {
+    "id": "bk-db",
+    "mydb": "wu-db",
+    "name": "water.db (backup_runs)",
+    "sql": "",
+    "sqlquery": "msg.topic",
+    "type": "sqlite",
+    "wires": [
+      []
+    ],
+    "x": 1000,
+    "y": 5440,
+    "z": "wu-tab"
+  },
+  {
+    "crontab": "",
+    "id": "bk-ddl-tick",
+    "name": "On start: backup_runs table",
+    "once": true,
+    "onceDelay": "5",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "topic": "ddl",
+    "type": "inject",
+    "wires": [
+      [
+        "bk-ddl"
+      ]
+    ],
+    "x": 220,
+    "y": 5480,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "return { topic: 'CREATE TABLE IF NOT EXISTS backup_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, start_at INTEGER, end_at INTEGER, tank_start REAL, tank_end REAL, target REAL, minutes INTEGER, reason TEXT, failed INTEGER)' };",
+    "id": "bk-ddl",
+    "initialize": "",
+    "libs": [],
+    "name": "backup_runs DDL",
+    "noerr": 0,
+    "outputs": 1,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      [
+        "bk-db"
+      ]
+    ],
+    "x": 620,
+    "y": 5480,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "// Added 22 Nov 2026: adds the backup top-up line to the 6 PM email, only on days it ran.\nconst b = global.get('waterBackup');\nif (msg.waText && msg.waKey && b && b.runs && b.runs.length && b.date === String(msg.waKey).split('|')[0]) {\n  const m = b.runs.reduce((a, r) => a + r.min, 0);\n  const d = m >= 60 ? Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm' : m + 'm';\n  msg.waText += '\\nBackup top-up - ' + b.runs[0].from + '% to ' + b.runs[b.runs.length - 1].to + '%, ' + d;\n  msg.payload = msg.waText;\n}\nreturn msg;",
+    "id": "bk-mail",
+    "initialize": "",
+    "libs": [],
+    "name": "6 PM email: add backup top-up line",
+    "noerr": 0,
+    "outputs": 1,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      [
+        "wu-mail-fn"
+      ]
+    ],
+    "x": 660,
+    "y": 580,
+    "z": "wu-tab"
+  },
+  {
+    "id": "ep-sec",
+    "info": "",
+    "name": "WEB APP: controller state to /share/water-state.json; top-up settings from input_text.water_backup_settings (added 22 Nov 2026)",
+    "type": "comment",
+    "wires": [],
+    "x": 520,
+    "y": 5560,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "// Web app (Water API) reads the controller's own state from /share/water-state.json, written here every 5 s.\n// Read-only, no control effect. Added 22 Nov 2026.\nconst s = global.get('waterLeanState') || {};\nconst ev = s.ev ? { id: s.ev.id, kind: s.ev.kind, openedAt: s.ev.openedAt, mode: s.ev.mode || null, tankStart: s.ev.tankStart, tankMax: s.ev.tankMax,\n  runs: s.ev.runs, runMs: s.ev.runMs, tdsMin: s.ev.tdsMin, tdsMax: s.ev.tdsMax, peakFlow: s.ev.peakFlow } : null;\nconst DEF = { startBelow: 20, leaveAtSupply: 25, maxTarget: 50, minHoursAway: 6, maxRunMin: 60 };\nmsg.payload = JSON.stringify({\n  at: Date.now(),\n  lean: { phase: s.phase || null, sub: s.sub || null, day: s.day || null, manual: s.manual === true, manualSince: s.manualSince || null, tank: s.tank,\n    ev, fe: s.fe ? { firstFlowAt: s.fe.firstFlowAt || null, confirmed: Boolean(s.fe.confirmed) } : null,\n    stopCause: s.stopCause || null, lastTick: s.lastTick || null, lastSeen: s.lastSeen || null },\n  week: global.get('waterWeek') || null,\n  backup: global.get('waterBackupState') || null,\n  cfg: Object.assign({}, DEF, global.get('waterBackupCfg') || {}),\n});\nreturn msg;",
+    "id": "ep-state-fn",
+    "initialize": "",
+    "libs": [],
+    "name": "Controller state for the web app (read-only)",
+    "noerr": 0,
+    "outputs": 1,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      [
+        "ep-file"
+      ]
+    ],
+    "x": 520,
+    "y": 5620,
+    "z": "wu-tab"
+  },
+  {
+    "crontab": "",
+    "id": "ep-tick",
+    "name": "Every 5 s",
+    "once": true,
+    "onceDelay": "3",
+    "props": [],
+    "repeat": "5",
+    "topic": "",
+    "type": "inject",
+    "wires": [
+      [
+        "ep-state-fn"
+      ]
+    ],
+    "x": 190,
+    "y": 5620,
+    "z": "wu-tab"
+  },
+  {
+    "appendNewline": false,
+    "createDir": true,
+    "encoding": "utf8",
+    "filename": "/share/water-state.json",
+    "filenameType": "str",
+    "id": "ep-file",
+    "name": "/share/water-state.json",
+    "overwriteFile": "true",
+    "type": "file",
+    "wires": [
+      []
+    ],
+    "x": 840,
+    "y": 5620,
+    "z": "wu-tab"
+  },
+  {
+    "entities": {
+      "entity": [
+        "input_text.water_backup_settings"
+      ],
+      "regex": [],
+      "substring": []
+    },
+    "entityidfiltertype": "list",
+    "exposeAsEntityConfig": "",
+    "for": "0",
+    "forType": "num",
+    "forUnits": "seconds",
+    "id": "ep-cfg-ha",
+    "ifState": "",
+    "ifStateOperator": "is",
+    "ifStateType": "str",
+    "ignoreCurrentStateUnavailable": true,
+    "ignoreCurrentStateUnknown": true,
+    "ignorePrevStateNull": false,
+    "ignorePrevStateUnavailable": false,
+    "ignorePrevStateUnknown": false,
+    "name": "Top-up settings from the web app",
+    "outputInitially": true,
+    "outputOnlyOnStateChange": true,
+    "outputProperties": [
+      {
+        "property": "payload",
+        "propertyType": "msg",
+        "value": "",
+        "valueType": "entityState"
+      }
+    ],
+    "outputs": 1,
+    "server": "7e55f602.47a88",
+    "stateType": "str",
+    "type": "server-state-changed",
+    "version": 6,
+    "wires": [
+      [
+        "ep-cfg-fn"
+      ]
+    ],
+    "x": 240,
+    "y": 5680,
+    "z": "wu-tab"
+  },
+  {
+    "finalize": "",
+    "func": "// Top-up settings saved from the web app arrive as JSON in input_text.water_backup_settings (Water API sets it).\n// Range-checked here, then read by the backup top-up node. Added 22 Nov 2026.\nconst LIM = { startBelow: [5, 50], leaveAtSupply: [5, 60], maxTarget: [20, 90], minHoursAway: [1, 48], maxRunMin: [10, 110] };\nlet body;\ntry { body = JSON.parse(String(msg.payload || '')); } catch (e) { node.status({ fill: 'grey', shape: 'ring', text: 'no settings saved' }); return null; }\nconst cfg = {};\nfor (const [k, [lo, hi]] of Object.entries(LIM)) {\n  const v = Math.round(Number(body[k]));\n  if (body[k] != null && Number.isFinite(v) && v >= lo && v <= hi) cfg[k] = v;\n}\nglobal.set('waterBackupCfg', cfg);\nnode.status({ fill: 'green', shape: 'dot', text: 'applied ' + JSON.stringify(cfg).slice(0, 60) });\nreturn null;",
+    "id": "ep-cfg-fn",
+    "initialize": "",
+    "libs": [],
+    "name": "Apply top-up settings (range-checked)",
+    "noerr": 0,
+    "outputs": 1,
+    "timeout": 0,
+    "type": "function",
+    "wires": [
+      []
+    ],
+    "x": 560,
+    "y": 5680,
     "z": "wu-tab"
   }
 ]
