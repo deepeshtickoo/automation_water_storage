@@ -205,7 +205,7 @@ app.get("/api/v1/system", async (req, res) => {
     devices: [
       dev("esp-motor", "Pump-side sensors", "Flow, TDS and drain valve (ESP32)", s.flow, 15),
       dev("esp-tank", "Tank level sensor", "Ultrasonic, three joined 2,000 L tanks (ESP32)", s.tank, 30),
-      dev("main-plug", "Main pump plug", `Tapo P110, 1.5 HP pump${num(s.volts) ? `, ${Math.round(num(s.volts))} V mains` : ""}`, s.pump, 60 * 24),
+      dev("main-plug", "Main pump plug", `Tapo P110, 1.5 HP pump${num(s.volts) ? `, ${Math.round(num(s.volts))} V mains` : ""}`, s.pump, 0),
       dev("sub-plug", "Submersible plug", "Tapo plug with its own 120 min auto-off", s.sub, 0),
       { key: "controller", name: "Automatic controller", detail: "Node-RED, Controller v5", state: !nr ? "down" : tick && Date.now() - tick < 120000 ? "ok" : "stale", seen: tick },
       { key: "ai", name: "AI assistant", detail: "FreeLLMAPI on the home server", state: lastAi?.ts && Date.now() - lastAi.ts < 3 * H ? "ok" : "stale", seen: lastAi?.ts || null },
