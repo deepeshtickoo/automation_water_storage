@@ -1,62 +1,82 @@
-# Automated water supply and storage (ESP32, Home Assistant, Node-RED)
+# Automated water supply and storage: stage 1
 
-A residential water supply storage solution for a 5-storey building in Delhi NCR. Municipal water arrives roughly every other day for a few hours, at low pressure, and the first water after supply starts is often contaminated (high TDS, sewage smell). This system finds the supply, rejects bad water, pumps only clean water up to the rooftop tanks and reports what happened.
+A residential water supply storage solution: rooftop tanks filled from a municipal supply that arrives every day or
+two, for a few hours, often dirty at first. This repository is the first stage. One home runs the controller in
+Node-RED on Home Assistant, and the Water API, a small Express.js app, showed its status on a phone.
 
-## What it does
+## How it works
 
-- Detects municipal supply with 3-second drain-valve probes every 15 minutes, round the clock, so the pump never runs dry looking for water.
-- Flushes the contaminated first water to the drain in 5-minute flushes every 15 minutes, comparing TDS at the start and the end, and pumps only once it falls.
-- Keeps filling through low-pressure spells by testing with short pump pulses every 30 minutes, and ends the supply event when two pulses in a row find no good flow.
-- Fills 3 x 2000 L rooftop tanks (one shared volume, about 15 m rising main): 80% is a successful fill, 92% is a completed fill.
-- Keeps one daily supply record (one row per day) that the dashboard, the Telegram bot and the AI all read, so they always agree.
-- Forecasts the next 7 days of supply from its own history and probes less on days no supply is expected.
-- Reports through a Telegram bot (owner and family group), a Home Assistant dashboard and a daily 6 PM email.
-- Optional AI layer (any OpenAI-compatible endpoint, free models by default) writes summaries, answers questions with read-only SQL tools and scores its own forecasts. The controller never depends on it.
+```mermaid
+flowchart LR
+  esp["ESP32 boards (ESPHome)<br/>flow, TDS, drain valve, tank level"]
+  ha["Home Assistant<br/>(ESPHome native API)"]
+  nr["Node-RED<br/>fill controller + SQLite"]
+  api["Water API<br/>(Express.js)"]
+  ui["Phone browser<br/>Live, Today, History"]
+  plug["Smart plug<br/>(pump)"]
+  esp --> ha --> nr
+  nr -- "pump and valve commands" --> ha
+  ha --> plug
+  nr -- "SQLite, read-only" --> api
+  ha -- "live states" --> api
+  api --> ui
+```
 
-## Plumbing
+- The ESP32 boards report flow, TDS and tank level to Home Assistant over the ESPHome native API. There is no
+  MQTT at this stage.
+- Node-RED, running on Home Assistant, is the controller. It probes for supply with the drain valve, flushes dirty
+  water to the drain, pumps only clean water to the tanks, and records everything in a SQLite database.
+- The Water API reads that database (read-only) and Home Assistant's live states, and serves three phone pages
+  and a JSON API.
 
-Municipal inlet -> 1.5 HP pump -> flow sensor -> TDS sensor -> T junction. One branch goes up the rising main to the tanks, the other to a sewer drain through a normally-closed drain valve. Probes and flushes use the valve only; the pump and the valve are never on together.
+## Screenshots
 
-## Hardware
+Demo data only: a made-up home with supply every other morning.
 
-| Part | Role |
-|---|---|
-| ESP32, pump side (ESPHome, motor.yaml) | TDS sensor, water flow sensor, drain valve relay |
-| ESP32, tank side (ESPHome, tank.yaml) | Tank level sensor (distance type, reported as %) |
-| Smart plug with power monitoring | Switches the pump, reports watts/amps/volts |
-| Home Assistant OS (VM on TrueNAS Scale) | Runs Node-RED, the dashboard and helpers |
+| Live | Today | History (7 days) |
+|---|---|---|
+| ![Live page](docs/images/stage1-live.png) | ![Today page](docs/images/stage1-today.png) | ![History page](docs/images/stage1-history.png) |
 
-## Controller routine (v6)
+## Where it sits
 
-- Every day, round the clock (or only inside a window set with the Telegram /window command): open the drain valve for 3 s every 15 minutes until one probe sees flow. On days the 7-day forecast marks as no-supply, every 30 minutes.
-- Water found: a 5-minute flush starts straight away (drain open, TDS at the start vs the end), then again every 15 minutes. Falling, or steady inside 100-240 ppm: 50 s pump pulse. Rising: no pump, next flush. No flow through the valve: a pump pulse tests the water instead.
-- Pump pulse: if TDS is in range at 50 s, keep filling; otherwise stop and go back to flushes every 15 minutes.
-- While filling: tank 92% is a completed fill and probing stops until midnight. Flow 19 L/min or below, or a dry run, stops the pump; pump pulses then run every 30 minutes, and two pulses in a row with no good flow end the supply event (probing resumes). TDS leaving the range goes back to flushes. A single run is capped at 2 hours, followed by a 2-minute rest and a new pulse.
-- If the pump-side ESP32 drops off Wi-Fi while filling, the pump keeps running for up to 5 minutes, using the plug power reading as the dry-run check.
-- Manual mode from the dashboard pauses the controller and returns to automatic after 1h 30m.
+| Stage | What | Where |
+|---|---|---|
+| Foundation | Home Assistant + Node-RED controller for one home | this repository |
+| **1** | **Express.js status page (Water API)** | **this repository, `water-api/`** |
+| 2 | Single-home app: Python services, MQTT, time-series database | private (commercial), available on request |
+| 3 | Multi-home app: dashboard for several homes | private (commercial), available on request |
+| 4 | Water platform: one database per customer, admin portal | private (commercial), available on request |
 
-## Node-RED flow (node-red/flows.json)
+**Why this stage.** The controller already ran in Node-RED, but the only views were the Home Assistant dashboard
+and a Telegram bot. The Water API adds a plain phone page and a JSON API on top of the controller's own database,
+without changing the controller.
 
-Everything runs in one tab, Water System, split into labelled sections:
+**What came next, and why.** Everything here depends on one Home Assistant install in one home. The later stages
+move the data and the controller into separate services over MQTT, so more than one home can be served. Those
+stages are private (commercial), available on request.
 
-- Unified: SQLite recorder, dashboard values, 6 PM email and the daily supply record.
-- Controller: probes, flushes, pump pulses, the ESP32 dropout guard, the event layer (one supply event per day) and the supply window learner.
-- Telegram bot: /status, /week, /insights, free chat (owner), owner-only settings (/window, /window off, /tds) applied after /yes, access by /join with owner approval (/users), live updates and group notices.
-- AI core, context and tools, diagnostics: model routing with fallbacks, call budget, read-only tools, agent loop, model bench.
-- Forecast: AI forecast (shadow, scored) and the 7-day supply forecast (code only, no AI).
-- Anomalies and digests.
+## Tech
 
-## Water API (water-api/)
+- ESP32 boards with ESPHome (`motor.yaml`, `tank.yaml`)
+- Home Assistant OS, Node-RED (`node-red/flows.json`), SQLite
+- Water API: Node.js 22, Express, Node's built-in SQLite module, Docker (as a Home Assistant app)
+- Grafana dashboard (`grafana/`)
 
-A read-only Node.js and Express app that runs as a local Home Assistant app and serves a phone dashboard (live, today, history charts) and a JSON API from the controller's SQLite database. See [water-api/README.md](water-api/README.md).
+## Run it
 
-## Install
+- **Water API:** see [water-api/README.md](water-api/README.md). For a quick local try:
 
-1. ESPHome: copy secrets.yaml.example to secrets.yaml, fill it in, then flash motor.yaml and tank.yaml.
-2. Node-RED: import node-red/flows.json and install any missing palette nodes (Home Assistant websocket nodes, node-red-node-sqlite, node-red-contrib-telegrambot, node-red-node-email and the LLM nodes used by the flows).
-3. Set your own values: Home Assistant server, entity IDs, Telegram bot token and chat IDs (placeholders 123456789 and -1001234567890), email account, AI endpoint and key (the ai-cfg node).
-4. Create the Home Assistant helpers used by the flows: input_boolean.water_manual_control, input_boolean.water_ai_enabled and the input_text.water_* status helpers.
+  ```sh
+  cd water-api
+  npm install
+  WATER_DB=/path/to/water.db npm start   # then open http://localhost:3000/today
+  ```
 
-## Versioning
+  The Live page needs Home Assistant; Today and History only need the database.
+- **Controller:** import `node-red/flows.json` into Node-RED and flash the ESPHome files.
+  [docs/home-system.md](docs/home-system.md) describes the controller, the hardware and the settings to fill in.
 
-This repository is updated automatically from the live system by a Node-RED Git Sync flow: one pull request per noteworthy change, plus a nightly 11 PM sync that publishes only when the flows changed. See CHANGELOG.md. Keys, tokens, chat IDs, email addresses and private hostnames are redacted before publishing.
+## Status
+
+The controller still runs in one home in Node-RED (now v7.1). The Water API was retired from the home system in Nov
+2026 and lives on as a demo. This repository is updated automatically from the live system (see `CHANGELOG.md`).
